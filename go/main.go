@@ -1,20 +1,25 @@
 package main
 
 import (
-	"io"
+	"database/sql"
 	"log"
-	"net/http"
+
+	sf "github.com/snowflakedb/gosnowflake"
 )
 
 func main() {
-	resp, err := http.Get("http://127.0.0.1:8000")
-	if err != nil {
-		panic(err)
+	cfg := &sf.Config{
+		Account:  "account",
+		User:     "user",
+		Password: "password",
+		Database: "database",
+		Schema:   "scheme",
+		Protocol: "http",
+		Host:     "localhost",
+		Port:     8000,
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
-	}
-	log.Println(string(body))
+	dsn, _ := sf.DSN(cfg)
+	log.Println(dsn)
+	db, _ := sql.Open("snowflake", dsn)
+	log.Println(db.Ping())
 }
