@@ -21,5 +21,14 @@ func main() {
 	dsn, _ := sf.DSN(cfg)
 	log.Println(dsn)
 	db, _ := sql.Open("snowflake", dsn)
-	log.Println(db.Ping())
+	// log.Println(db.Ping())
+	var i int
+	rows, err := db.Query("SELECT 1;")
+	log.Println("rows")
+	log.Println(err)
+	for rows.Next() {
+		err = rows.Scan(&i)
+		log.Println(err)
+	}
+	log.Println(i)
 }
