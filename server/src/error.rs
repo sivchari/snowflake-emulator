@@ -1,6 +1,7 @@
 use sqlparser::parser;
 use sqlparser::tokenizer;
 use std::fmt;
+// use std::num;
 
 #[derive(Debug)]
 pub enum Error {
@@ -8,6 +9,7 @@ pub enum Error {
     // TODO: refactor
     ParserError(parser::ParserError),
     TokenizerError(tokenizer::TokenizerError),
+    // ParseIntError(num::ParseIntError),
 }
 
 impl From<parser::ParserError> for Error {
@@ -22,12 +24,19 @@ impl From<tokenizer::TokenizerError> for Error {
     }
 }
 
+// impl From<num::ParseIntError> for Error {
+//     fn from(error: num::ParseIntError) -> Self {
+//         Error::ParseIntError(error)
+//     }
+// }
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::NotImplemented(msg) => write!(f, "Not implemented error {}", msg),
             Error::ParserError(msg) => write!(f, "ParserError {}", msg),
             Error::TokenizerError(msg) => write!(f, "TokenizerError {}", msg),
+            // Error::ParseIntError(msg) => write!(f, "ParseIntError {}", msg),
         }
     }
 }
