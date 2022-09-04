@@ -1,6 +1,11 @@
-name: test
+name: rust
 
-on: [push]
+on:
+  push:
+    paths:
+      - "cli/**"
+      - "sf/**"
+      - "server/**"
 
 jobs:
   test:
