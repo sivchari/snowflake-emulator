@@ -19,16 +19,20 @@ func main() {
 		Port:     8000,
 	}
 	dsn, _ := sf.DSN(cfg)
-	log.Println(dsn)
 	db, _ := sql.Open("snowflake", dsn)
-	// log.Println(db.Ping())
+	if err := db.Ping(); err != nil {
+		panic(err)
+	}
 	var i int
 	rows, err := db.Query("SELECT 1;")
-	log.Println("rows")
-	log.Println(err)
-	for rows.Next() {
-		err = rows.Scan(&i)
-		log.Println(err)
+	if err != nil {
+		panic(err)
 	}
-	log.Println(i)
+	for rows.Next() {
+		if err := rows.Scan(&i); err != nil {
+			panic(err)
+		}
+		log.Println(i)
+	}
+	log.Println("end")
 }

@@ -4,7 +4,7 @@ use sqlparser::dialect::SnowflakeDialect;
 use sqlparser::parser;
 use sqlparser::tokenizer;
 
-pub fn parse_to_statment(query: &str) -> Result<ast::Statement> {
+pub fn query_to_statment(query: &str) -> Result<ast::Statement> {
     let dialect = SnowflakeDialect {};
     let mut tokenizer = tokenizer::Tokenizer::new(&dialect, query);
     let tokens = tokenizer.tokenize()?;
@@ -21,7 +21,7 @@ mod test {
     #[test]
     fn parse_simple() {
         let query = "SELECT 1;";
-        let stmt = parse_to_statment(query).unwrap();
+        let stmt = query_to_statment(query).unwrap();
         let expected = ast::Statement::Query(Box::new(ast::Query {
             with: None,
             body: Box::new(ast::SetExpr::Select(Box::new(ast::Select {
