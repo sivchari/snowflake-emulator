@@ -1,3 +1,3 @@
 [workspace]
-members = ["server", "cli"]
+members = ["server", "cli", "playground", "sf"]
 default-members = ["cli"]
