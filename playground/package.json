@@ -6,7 +6,7 @@
     "react-dom": "^18.2.0"
   },
   "scripts": {
-    "lint": "eslint --ext .jsx,.js,.tsx,.ts ."
+    "lint": "eslint . --ext .jsx,.js,.tsx,.ts"
   },
   "eslintConfig": {
     "extends": [
