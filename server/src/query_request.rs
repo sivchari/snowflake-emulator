@@ -27,6 +27,7 @@ struct ExecResponseData {
 
 #[derive(Serialize)]
 struct RowType {
+    name: String,
     r#type: String,
 }
 
@@ -35,21 +36,17 @@ async fn handler(_req: HttpRequest, query_request: web::Json<QueryRequest>) -> H
     let stmt = parser::query_to_statment(&query_request.sql_text).unwrap();
     let plan = plan::statement_to_plan(&stmt).unwrap();
     let rows = plan.execute_plan().unwrap();
-    let mut rowtypes = Vec::new();
-    // TODO: refactor (generate rowtypes)
-    // TODO: refactor (convert to rowsets)
-    // rowtypes: [int, string, bool]
-    // [["1", "a", "true"], ["2", "b", "false"]]
-    let rowtype = RowType {
-        r#type: "text".to_string(),
-    };
-    rowtypes.push(rowtype);
-    let ref mut rowsets = Vec::new();
-    rowsets.push(rows.rows);
     let exec_response = ExecResponse {
         data: ExecResponseData {
-            rowtype: rowtypes,
-            rowset: rowsets.to_vec(),
+            rowtype: rows
+                .rowtypes
+                .iter()
+                .map(|r| RowType {
+                    name: r.name.clone(),
+                    r#type: r.r#type.clone(),
+                })
+                .collect(),
+            rowset: rows.rowsets,
         },
         message: format!(
             "{} and {} and {} and {}",
