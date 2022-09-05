@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: setup bun runtime
-        uses: antongolub/action-setup-bun@v1 # or @v1.x.x
+        uses: antongolub/action-setup-bun@v1
       - name: install bun dependencies
         run: bun install
       - name: run lint

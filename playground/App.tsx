@@ -15,7 +15,8 @@ const App: React.FC = () => {
       <h2> Query </h2>
       <input type="text" name="query" onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)} />
       <button onClick={() => execQuery(query)}> Execute Query </button>
-      <h1> Result {rows} </h1>
+      <h1> Result </h1>
+      <h2> {rows} </h2>
     </div>
   );
 }

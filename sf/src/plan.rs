@@ -1,11 +1,10 @@
 use crate::error::{Error, Result};
-use crate::expr;
-use crate::value;
+use crate::expr::*;
 use sqlparser::ast;
 
 #[derive(Debug)]
 pub enum Plan {
-    Select { exprs: Vec<expr::Expr> },
+    Select { exprs: Vec<Expr> },
 }
 
 pub fn statement_to_plan(stmt: &ast::Statement) -> Result<Plan> {
@@ -20,27 +19,14 @@ pub fn statement_to_plan(stmt: &ast::Statement) -> Result<Plan> {
 pub fn query_to_plan(query: &ast::Query) -> Result<Plan> {
     match query.body.as_ref() {
         ast::SetExpr::Select(ref select) => {
-            let mut exprs: Vec<expr::Expr> = Vec::new();
+            let mut exprs: Vec<Expr> = Vec::new();
             for p in select.projection.iter() {
                 match p {
-                    ast::SelectItem::UnnamedExpr(ref expr) => match expr {
-                        ast::Expr::Value(value) => match value {
-                            ast::Value::Number(ref n, ref l) => {
-                                let value = value::Value::Number(n.to_string(), *l);
-                                exprs.push(expr::Expr::Value(value))
-                            }
-                            _ => {
-                                return Err(Error::NotImplemented(
-                                    "this expr is not supported".to_string(),
-                                ))
-                            }
-                        },
-                        _ => {
-                            return Err(Error::NotImplemented(
-                                "this expr is not supported".to_string(),
-                            ))
-                        }
-                    },
+                    // TODO: refactor
+                    ast::SelectItem::UnnamedExpr(ref expr) => {
+                        let expr = ast_to_expr(expr)?;
+                        exprs.push(expr);
+                    }
                     _ => {
                         return Err(Error::NotImplemented(
                             "this expr is not supported".to_string(),
