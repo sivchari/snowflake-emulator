@@ -23,30 +23,24 @@ func main() {
 	if err := db.Ping(); err != nil {
 		panic(err)
 	}
-	rows, err := db.Query(`SELECT 1, 1.1, true, "a", b;`)
+	rows, err := db.Query("SELECT id, name FROM personal2")
 	if err != nil {
 		panic(err)
 	}
 	type dest struct {
-		a int
-		b float64
-		c bool
-		d string
-		e string
+		ID   int
+		Name string
 	}
+
 	var d dest
 	for rows.Next() {
-		if err := rows.Scan(
-			&d.a,
-			&d.b,
-			&d.c,
-			&d.d,
-			&d.e,
-		); err != nil {
-			panic(err)
+		if err := rows.Scan(&d.ID, &d.Name); err != nil {
+			log.Println(err)
+			break
 		}
 	}
-	log.Printf("%v", d)
+
+	log.Println(d)
 
 	log.Println("end")
 }

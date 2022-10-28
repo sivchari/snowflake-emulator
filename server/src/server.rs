@@ -1,6 +1,6 @@
 use actix_web::{web, App, HttpServer};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use std::fs::{remove_file, File};
+use std::fs::remove_file;
 use std::sync::Arc;
 
 use crate::{auth, query_request};
@@ -17,7 +17,7 @@ pub async fn run(host: &str, port: u16) -> std::io::Result<()> {
     .bind((host, port))?
     .run()
     .await?;
-    remove_file("snowflake-emulator")
+    remove_file("sqlite://snowflake-emulator.db")
 }
 
 pub struct Context {
@@ -26,9 +26,8 @@ pub struct Context {
 
 impl Context {
     pub async fn new() -> Self {
-        let _ = File::create("snowflake-emulator").unwrap();
         let pool = SqlitePoolOptions::new()
-            .connect("snowflake-emulator")
+            .connect("sqlite://snowflake-emulator.db?mode=rwc")
             .await
             .unwrap();
         Self { pool }
