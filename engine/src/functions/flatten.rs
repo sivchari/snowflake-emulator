@@ -15,6 +15,8 @@ use datafusion::logical_expr::{
     ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
+use super::helpers::{safe_index, safe_index_i32};
+
 // ============================================================================
 // FLATTEN scalar helper functions
 // ============================================================================
@@ -70,15 +72,20 @@ impl ScalarUDFImpl for FlattenArrayFunc {
         let array_json = &args[0];
         let index = &args[1];
 
-        // Get index value
+        // Get index value with validation for negative values
         let idx = match index {
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(i))) => *i as usize,
-            ColumnarValue::Scalar(ScalarValue::Int32(Some(i))) => *i as usize,
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(i))) => safe_index(*i),
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(i))) => safe_index_i32(*i),
             _ => {
                 return Err(datafusion::error::DataFusionError::Execution(
                     "FLATTEN_ARRAY second argument must be an integer".to_string(),
                 ))
             }
+        };
+
+        // Return NULL for negative indices
+        let Some(idx) = idx else {
+            return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)));
         };
 
         match array_json {
