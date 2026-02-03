@@ -2,8 +2,13 @@
 name = "cli"
 version = "0.1.0"
 edition = "2021"
+description = "Snowflake emulator CLI"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "snowflake-emulator"
+path = "src/main.rs"
 
 [dependencies]
-server = {path = "../server"}
+server = { path = "../server" }
+tokio.workspace = true
+tracing-subscriber.workspace = true
