@@ -11,11 +11,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use engine::protocol::{ErrorResponse, StatementRequest};
+use engine::protocol::{ErrorResponse, StatementRequest, V1QueryRequest, V1QueryResponse};
 
 use crate::state::AppState;
 
-/// SQL 実行ハンドラー
+/// SQL execution handler
 ///
 /// POST /api/v2/statements
 pub async fn execute_statement(
@@ -24,7 +24,7 @@ pub async fn execute_statement(
 ) -> impl IntoResponse {
     tracing::info!("Executing SQL: {}", request.statement);
 
-    // エグゼキューターを取得して SQL を実行
+    // Get executor and execute SQL
     let executor = state.session_manager.executor();
 
     match executor.execute(&request.statement).await {
@@ -42,7 +42,7 @@ pub async fn execute_statement(
     }
 }
 
-/// ステートメントステータス取得ハンドラー
+/// Statement status handler
 ///
 /// GET /api/v2/statements/{statementHandle}
 pub async fn get_statement_status(
@@ -51,8 +51,8 @@ pub async fn get_statement_status(
 ) -> impl IntoResponse {
     tracing::info!("Getting status for statement: {}", statement_handle);
 
-    // TODO: 非同期実行の結果を取得
-    // 現在は同期実行のみなので、ハンドルが見つからないエラーを返す
+    // TODO: Get async execution result
+    // Currently only synchronous execution is supported, so return handle not found error
     let error_response = ErrorResponse {
         code: "002014".to_string(),
         message: format!("Statement handle not found: {}", statement_handle),
@@ -63,7 +63,7 @@ pub async fn get_statement_status(
     (StatusCode::NOT_FOUND, Json(error_response))
 }
 
-/// ステートメントキャンセルハンドラー
+/// Statement cancel handler
 ///
 /// POST /api/v2/statements/{statementHandle}/cancel
 pub async fn cancel_statement(
@@ -72,7 +72,7 @@ pub async fn cancel_statement(
 ) -> impl IntoResponse {
     tracing::info!("Cancelling statement: {}", statement_handle);
 
-    // TODO: 非同期実行のキャンセル
+    // TODO: Cancel async execution
     let response = serde_json::json!({
         "statementHandle": statement_handle,
         "message": "Statement cancelled"
@@ -81,7 +81,7 @@ pub async fn cancel_statement(
     (StatusCode::OK, Json(response))
 }
 
-/// ヘルスチェックハンドラー
+/// Health check handler
 ///
 /// GET /health
 pub async fn health_check() -> impl IntoResponse {
@@ -91,13 +91,13 @@ pub async fn health_check() -> impl IntoResponse {
     }))
 }
 
-/// ログインリクエストハンドラー（ダミー認証）
+/// Login request handler (dummy authentication)
 ///
 /// POST /session/v1/login-request
 pub async fn login_request(Json(request): Json<LoginRequest>) -> impl IntoResponse {
     tracing::info!("Login request for account: {:?}", request.data.account_name);
 
-    // エミュレーターでは認証をスキップしてダミーレスポンスを返す
+    // Emulator skips authentication and returns dummy response
     let response = LoginResponse {
         data: LoginResponseData {
             token: Uuid::new_v4().to_string(),
@@ -119,7 +119,32 @@ pub async fn login_request(Json(request): Json<LoginRequest>) -> impl IntoRespon
     (StatusCode::OK, Json(response))
 }
 
-/// ログインリクエスト
+/// v1 query execution handler (for gosnowflake driver)
+///
+/// POST /queries/v1/query-request
+pub async fn v1_query_request(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<V1QueryRequest>,
+) -> impl IntoResponse {
+    tracing::info!("v1 Query request: {}", request.sql_text);
+
+    let executor = state.session_manager.executor();
+
+    match executor.execute(&request.sql_text).await {
+        Ok(response) => {
+            let v1_response = V1QueryResponse::from_statement_response(&response);
+            (StatusCode::OK, Json(v1_response)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("v1 Query execution error: {}", e);
+            let error_response =
+                V1QueryResponse::error(e.error_code(), &e.to_string(), e.sql_state());
+            (StatusCode::OK, Json(error_response)).into_response()
+        }
+    }
+}
+
+/// Login request
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub data: LoginRequestData,
@@ -136,7 +161,7 @@ pub struct LoginRequestData {
     pub client_app_version: Option<String>,
 }
 
-/// ログインレスポンス
+/// Login response
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
     pub data: LoginResponseData,
