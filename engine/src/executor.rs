@@ -271,4 +271,86 @@ mod tests {
         assert_eq!(response.data.unwrap()[0][0], Some("3".to_string()));
         assert_eq!(response.result_set_meta_data.row_type[0].name, "result");
     }
+
+    #[tokio::test]
+    async fn test_create_table_insert_select() {
+        let executor = Executor::new();
+
+        // CREATE TABLE
+        let result = executor
+            .execute("CREATE TABLE users (id INT, name VARCHAR)")
+            .await;
+        assert!(result.is_ok(), "CREATE TABLE failed: {:?}", result.err());
+
+        // INSERT
+        let result = executor
+            .execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
+            .await;
+        assert!(result.is_ok(), "INSERT failed: {:?}", result.err());
+
+        // SELECT
+        let response = executor
+            .execute("SELECT id, name FROM users ORDER BY id")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("1".to_string()));
+        assert_eq!(data[0][1], Some("Alice".to_string()));
+        assert_eq!(data[1][0], Some("2".to_string()));
+        assert_eq!(data[1][1], Some("Bob".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_select_with_where() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE products (id INT, name VARCHAR, price DOUBLE)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO products VALUES (1, 'Apple', 1.5), (2, 'Banana', 0.5), (3, 'Cherry', 3.0)")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT name, price FROM products WHERE price > 1.0 ORDER BY price")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("Apple".to_string()));
+        assert_eq!(data[1][0], Some("Cherry".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_functions() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE sales (amount DOUBLE)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO sales VALUES (100.0), (200.0), (300.0)")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT COUNT(*) as cnt, SUM(amount) as total, AVG(amount) as avg FROM sales")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("3".to_string()));
+        // SUM/AVG の結果は DataFusion の型推論に依存
+        assert!(data[0][1] == Some("600".to_string()) || data[0][1] == Some("600.0".to_string()));
+        assert!(data[0][2] == Some("200".to_string()) || data[0][2] == Some("200.0".to_string()));
+    }
 }
