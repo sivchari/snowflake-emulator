@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::catalog::SnowflakeCatalog;
 use crate::error::Result;
+use crate::functions;
 use crate::protocol::{ColumnMetaData, StatementResponse};
 
 /// SQL execution engine
@@ -27,6 +28,33 @@ impl Executor {
     pub fn new() -> Self {
         let ctx = SessionContext::new();
         let catalog = Arc::new(SnowflakeCatalog::new());
+
+        // Register Snowflake-compatible UDFs
+
+        // Conditional functions
+        ctx.register_udf(functions::iff());
+        ctx.register_udf(functions::nvl());
+        ctx.register_udf(functions::nvl2());
+
+        // JSON functions
+        ctx.register_udf(functions::parse_json());
+        ctx.register_udf(functions::to_json());
+
+        // Date/Time functions
+        ctx.register_udf(functions::dateadd());
+        ctx.register_udf(functions::datediff());
+
+        // TRY_* functions
+        ctx.register_udf(functions::try_parse_json());
+        ctx.register_udf(functions::try_to_number());
+        ctx.register_udf(functions::try_to_date());
+        ctx.register_udf(functions::try_to_boolean());
+
+        // Array/Object functions (FLATTEN helpers)
+        ctx.register_udf(functions::flatten_array());
+        ctx.register_udf(functions::array_size());
+        ctx.register_udf(functions::get_path());
+        ctx.register_udf(functions::object_keys());
 
         Self { ctx, catalog }
     }
@@ -226,7 +254,7 @@ impl Executor {
                 let arr = array.as_any().downcast_ref::<LargeStringArray>().unwrap();
                 arr.value(row_idx).to_string()
             }
-            _ => format!("{:?}", array),
+            _ => format!("<unsupported type {:?}>", array.data_type()),
         };
 
         Some(value)

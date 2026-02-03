@@ -5,6 +5,7 @@
 pub mod catalog;
 pub mod error;
 pub mod executor;
+pub mod functions;
 pub mod protocol;
 pub mod session;
 
