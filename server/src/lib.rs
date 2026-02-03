@@ -14,7 +14,7 @@ use tower_http::trace::TraceLayer;
 
 use state::AppState;
 
-/// サーバーを構築
+/// Build server router
 pub fn build_router() -> Router {
     let state = Arc::new(AppState::new());
 
@@ -30,12 +30,13 @@ pub fn build_router() -> Router {
         )
         .route("/health", get(handlers::health_check))
         .route("/session/v1/login-request", post(handlers::login_request))
+        .route("/queries/v1/query-request", post(handlers::v1_query_request))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
-/// サーバーを起動
+/// Start server
 pub async fn run(host: &str, port: u16) -> std::io::Result<()> {
     let app = build_router();
     let addr = format!("{}:{}", host, port);
