@@ -296,7 +296,7 @@ pub fn nvl2() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int64Array, StringArray};
+    use arrow::array::StringArray;
     use datafusion::common::ScalarValue;
 
     #[test]
