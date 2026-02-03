@@ -38,7 +38,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    /// Snowflake 互換のエラーコードを返す
+    /// Return Snowflake-compatible error code
     pub fn error_code(&self) -> &'static str {
         match self {
             Error::ParseError(_) => "001003",
@@ -54,7 +54,7 @@ impl Error {
         }
     }
 
-    /// Snowflake 互換の SQL State を返す
+    /// Return Snowflake-compatible SQL State
     pub fn sql_state(&self) -> &'static str {
         match self {
             Error::ParseError(_) => "42000",

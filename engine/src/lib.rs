@@ -1,6 +1,6 @@
 //! Snowflake Emulator Engine
 //!
-//! DataFusion をベースとした Snowflake 互換の SQL 実行エンジン
+//! Snowflake-compatible SQL execution engine based on DataFusion
 
 pub mod catalog;
 pub mod error;
