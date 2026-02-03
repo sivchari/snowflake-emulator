@@ -30,7 +30,10 @@ pub fn build_router() -> Router {
         )
         .route("/health", get(handlers::health_check))
         .route("/session/v1/login-request", post(handlers::login_request))
-        .route("/queries/v1/query-request", post(handlers::v1_query_request))
+        .route(
+            "/queries/v1/query-request",
+            post(handlers::v1_query_request),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state)
