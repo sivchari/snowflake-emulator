@@ -9,6 +9,8 @@ use arrow::array::{Array, Date32Array, Int64Array, StringArray};
 use arrow::datatypes::DataType;
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use datafusion::common::{Result, ScalarValue};
+
+use super::helpers::{clamp_day_to_month, nanos_to_components};
 use datafusion::logical_expr::{
     ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
@@ -130,16 +132,22 @@ fn dateadd_scalar(part: &str, value: i64, scalar: &ScalarValue) -> Result<Scalar
             )))
         }
         ScalarValue::TimestampNanosecond(Some(ns), tz) => {
-            let datetime = NaiveDateTime::from_timestamp_opt(
-                *ns / 1_000_000_000,
-                (*ns % 1_000_000_000) as u32,
-            )
-            .ok_or_else(|| {
-                datafusion::error::DataFusionError::Execution("Invalid timestamp".to_string())
-            })?;
+            let (secs, subsec_nanos) = nanos_to_components(*ns);
+            let datetime =
+                NaiveDateTime::from_timestamp_opt(secs, subsec_nanos).ok_or_else(|| {
+                    datafusion::error::DataFusionError::Execution("Invalid timestamp".to_string())
+                })?;
             let new_datetime = add_to_datetime(&datetime, part, value)?;
+            let result_nanos = new_datetime
+                .and_utc()
+                .timestamp_nanos_opt()
+                .ok_or_else(|| {
+                    datafusion::error::DataFusionError::Execution(
+                        "Result timestamp out of range (nanoseconds overflow)".to_string(),
+                    )
+                })?;
             Ok(ScalarValue::TimestampNanosecond(
-                Some(new_datetime.and_utc().timestamp_nanos_opt().unwrap_or(0)),
+                Some(result_nanos),
                 tz.clone(),
             ))
         }
@@ -226,7 +234,8 @@ fn add_to_date(date: &NaiveDate, part: &str, value: i64) -> Result<NaiveDate> {
             let total_months = date.year() * 12 + date.month() as i32 - 1 + value as i32;
             let new_year = total_months / 12;
             let new_month = (total_months % 12 + 1) as u32;
-            NaiveDate::from_ymd_opt(new_year, new_month, date.day().min(28)).ok_or_else(|| {
+            let clamped_day = clamp_day_to_month(new_year, new_month, date.day());
+            NaiveDate::from_ymd_opt(new_year, new_month, clamped_day).ok_or_else(|| {
                 datafusion::error::DataFusionError::Execution("Invalid month".to_string())
             })
         }
@@ -236,7 +245,8 @@ fn add_to_date(date: &NaiveDate, part: &str, value: i64) -> Result<NaiveDate> {
             let total_months = date.year() * 12 + date.month() as i32 - 1 + (value * 3) as i32;
             let new_year = total_months / 12;
             let new_month = (total_months % 12 + 1) as u32;
-            NaiveDate::from_ymd_opt(new_year, new_month, date.day().min(28)).ok_or_else(|| {
+            let clamped_day = clamp_day_to_month(new_year, new_month, date.day());
+            NaiveDate::from_ymd_opt(new_year, new_month, clamped_day).ok_or_else(|| {
                 datafusion::error::DataFusionError::Execution("Invalid quarter".to_string())
             })
         }
@@ -258,8 +268,9 @@ fn add_to_datetime(datetime: &NaiveDateTime, part: &str, value: i64) -> Result<N
             let total_months = datetime.year() * 12 + datetime.month() as i32 - 1 + value as i32;
             let new_year = total_months / 12;
             let new_month = (total_months % 12 + 1) as u32;
-            let new_date = NaiveDate::from_ymd_opt(new_year, new_month, datetime.day().min(28))
-                .ok_or_else(|| {
+            let clamped_day = clamp_day_to_month(new_year, new_month, datetime.day());
+            let new_date =
+                NaiveDate::from_ymd_opt(new_year, new_month, clamped_day).ok_or_else(|| {
                     datafusion::error::DataFusionError::Execution("Invalid month".to_string())
                 })?;
             Ok(new_date
@@ -279,8 +290,9 @@ fn add_to_datetime(datetime: &NaiveDateTime, part: &str, value: i64) -> Result<N
                 datetime.year() * 12 + datetime.month() as i32 - 1 + (value * 3) as i32;
             let new_year = total_months / 12;
             let new_month = (total_months % 12 + 1) as u32;
-            let new_date = NaiveDate::from_ymd_opt(new_year, new_month, datetime.day().min(28))
-                .ok_or_else(|| {
+            let clamped_day = clamp_day_to_month(new_year, new_month, datetime.day());
+            let new_date =
+                NaiveDate::from_ymd_opt(new_year, new_month, clamped_day).ok_or_else(|| {
                     datafusion::error::DataFusionError::Execution("Invalid quarter".to_string())
                 })?;
             Ok(new_date
@@ -411,13 +423,11 @@ fn scalar_to_datetime(scalar: &ScalarValue) -> Result<Option<NaiveDateTime>> {
             Ok(Some(datetime))
         }
         ScalarValue::TimestampNanosecond(Some(ns), _) => {
-            let datetime = NaiveDateTime::from_timestamp_opt(
-                *ns / 1_000_000_000,
-                (*ns % 1_000_000_000) as u32,
-            )
-            .ok_or_else(|| {
-                datafusion::error::DataFusionError::Execution("Invalid timestamp".to_string())
-            })?;
+            let (secs, subsec_nanos) = nanos_to_components(*ns);
+            let datetime =
+                NaiveDateTime::from_timestamp_opt(secs, subsec_nanos).ok_or_else(|| {
+                    datafusion::error::DataFusionError::Execution("Invalid timestamp".to_string())
+                })?;
             Ok(Some(datetime))
         }
         ScalarValue::Utf8(Some(s)) => {
