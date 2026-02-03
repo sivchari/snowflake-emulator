@@ -127,6 +127,7 @@ pub struct LoginRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[allow(dead_code)]
 pub struct LoginRequestData {
     pub account_name: Option<String>,
     pub login_name: Option<String>,
