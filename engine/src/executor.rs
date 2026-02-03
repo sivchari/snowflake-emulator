@@ -1,6 +1,6 @@
 //! SQL Executor powered by DataFusion
 //!
-//! Snowflake SQL を DataFusion で実行する
+//! Execute Snowflake SQL using DataFusion
 
 use std::sync::Arc;
 
@@ -13,17 +13,17 @@ use crate::catalog::SnowflakeCatalog;
 use crate::error::Result;
 use crate::protocol::{ColumnMetaData, StatementResponse};
 
-/// SQL 実行エンジン
+/// SQL execution engine
 pub struct Executor {
-    /// DataFusion セッションコンテキスト
+    /// DataFusion session context
     ctx: SessionContext,
 
-    /// Snowflake カタログ
+    /// Snowflake catalog
     catalog: Arc<SnowflakeCatalog>,
 }
 
 impl Executor {
-    /// 新しいエグゼキューターを作成
+    /// Create a new executor
     pub fn new() -> Self {
         let ctx = SessionContext::new();
         let catalog = Arc::new(SnowflakeCatalog::new());
@@ -31,23 +31,23 @@ impl Executor {
         Self { ctx, catalog }
     }
 
-    /// SQL を実行
+    /// Execute SQL
     pub async fn execute(&self, sql: &str) -> Result<StatementResponse> {
         let statement_handle = Uuid::new_v4().to_string();
 
-        // DataFusion で SQL を実行
+        // Execute SQL with DataFusion
         let df = self.ctx.sql(sql).await?;
 
-        // 結果を収集
+        // Collect results
         let batches = df.collect().await?;
 
-        // レスポンスを構築
+        // Build response
         let response = self.batches_to_response(batches, statement_handle)?;
 
         Ok(response)
     }
 
-    /// RecordBatch を StatementResponse に変換
+    /// Convert RecordBatch to StatementResponse
     fn batches_to_response(
         &self,
         batches: Vec<RecordBatch>,
@@ -57,11 +57,11 @@ impl Executor {
             return Ok(StatementResponse::success(vec![], vec![], statement_handle));
         }
 
-        // スキーマから列メタデータを作成
+        // Create column metadata from schema
         let schema = batches[0].schema();
         let row_type = self.schema_to_column_metadata(&schema);
 
-        // データを文字列配列に変換
+        // Convert data to string arrays
         let mut data: Vec<Vec<Option<String>>> = Vec::new();
 
         for batch in &batches {
@@ -81,7 +81,7 @@ impl Executor {
         Ok(StatementResponse::success(data, row_type, statement_handle))
     }
 
-    /// Arrow スキーマを Snowflake 列メタデータに変換
+    /// Convert Arrow schema to Snowflake column metadata
     fn schema_to_column_metadata(&self, schema: &Schema) -> Vec<ColumnMetaData> {
         schema
             .fields()
@@ -90,7 +90,7 @@ impl Executor {
             .collect()
     }
 
-    /// Arrow Field を ColumnMetaData に変換
+    /// Convert Arrow Field to ColumnMetaData
     fn field_to_column_metadata(&self, field: &Field) -> ColumnMetaData {
         let (sf_type, precision, scale, length) = self.arrow_type_to_snowflake(field.data_type());
 
@@ -104,13 +104,13 @@ impl Executor {
         }
     }
 
-    /// Arrow データ型を Snowflake データ型に変換
+    /// Convert Arrow data type to Snowflake data type
     fn arrow_type_to_snowflake(
         &self,
         data_type: &DataType,
     ) -> (String, Option<i32>, Option<i32>, Option<i32>) {
         match data_type {
-            // 整数型
+            // Integer types
             DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
                 ("FIXED".to_string(), Some(38), Some(0), None)
             }
@@ -118,28 +118,28 @@ impl Executor {
                 ("FIXED".to_string(), Some(38), Some(0), None)
             }
 
-            // 浮動小数点型
+            // Floating point types
             DataType::Float32 | DataType::Float64 => ("REAL".to_string(), None, None, None),
 
-            // 文字列型
+            // String types
             DataType::Utf8 | DataType::LargeUtf8 => {
                 ("TEXT".to_string(), None, None, Some(16777216))
             }
 
-            // バイナリ型
+            // Binary types
             DataType::Binary | DataType::LargeBinary => {
                 ("BINARY".to_string(), None, None, Some(8388608))
             }
 
-            // ブール型
+            // Boolean type
             DataType::Boolean => ("BOOLEAN".to_string(), None, None, None),
 
-            // 日付・時刻型
+            // Date/time types
             DataType::Date32 | DataType::Date64 => ("DATE".to_string(), None, None, None),
             DataType::Time32(_) | DataType::Time64(_) => ("TIME".to_string(), Some(9), None, None),
             DataType::Timestamp(_, _) => ("TIMESTAMP_NTZ".to_string(), Some(9), None, None),
 
-            // Decimal 型
+            // Decimal types
             DataType::Decimal128(precision, scale) => (
                 "FIXED".to_string(),
                 Some(*precision as i32),
@@ -153,15 +153,15 @@ impl Executor {
                 None,
             ),
 
-            // NULL 型
+            // NULL type
             DataType::Null => ("TEXT".to_string(), None, None, None),
 
-            // その他
+            // Other types
             _ => ("VARIANT".to_string(), None, None, None),
         }
     }
 
-    /// Arrow 配列の値を文字列に変換
+    /// Convert Arrow array value to string
     fn array_value_to_string(
         &self,
         array: &Arc<dyn arrow::array::Array>,
@@ -232,12 +232,12 @@ impl Executor {
         Some(value)
     }
 
-    /// カタログへの参照を取得
+    /// Get catalog reference
     pub fn catalog(&self) -> &Arc<SnowflakeCatalog> {
         &self.catalog
     }
 
-    /// DataFusion コンテキストへの参照を取得
+    /// Get DataFusion context reference
     pub fn context(&self) -> &SessionContext {
         &self.ctx
     }
@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(response.result_set_meta_data.num_rows, 1);
         let data = response.data.unwrap();
         assert_eq!(data[0][0], Some("3".to_string()));
-        // SUM/AVG の結果は DataFusion の型推論に依存
+        // SUM/AVG results depend on DataFusion type inference
         assert!(data[0][1] == Some("600".to_string()) || data[0][1] == Some("600.0".to_string()));
         assert!(data[0][2] == Some("200".to_string()) || data[0][2] == Some("200.0".to_string()));
     }

@@ -2,14 +2,14 @@
 
 use engine::session::SessionManager;
 
-/// アプリケーション状態
+/// Application state
 pub struct AppState {
-    /// セッションマネージャー
+    /// Session manager
     pub session_manager: SessionManager,
 }
 
 impl AppState {
-    /// 新しいアプリケーション状態を作成
+    /// Create a new application state
     pub fn new() -> Self {
         Self {
             session_manager: SessionManager::new(),

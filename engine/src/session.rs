@@ -1,6 +1,6 @@
 //! Session Management
 //!
-//! Snowflake セッションの管理
+//! Snowflake session management
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,32 +12,32 @@ use crate::executor::Executor;
 use crate::protocol::StatementResponse;
 use crate::Result;
 
-/// セッション
+/// Session
 pub struct Session {
-    /// セッション ID
+    /// Session ID
     pub id: String,
 
-    /// 現在のデータベース
+    /// Current database
     pub database: Option<String>,
 
-    /// 現在のスキーマ
+    /// Current schema
     pub schema: Option<String>,
 
-    /// 現在のウェアハウス（エミュレーターでは無視）
+    /// Current warehouse (ignored by emulator)
     pub warehouse: Option<String>,
 
-    /// 現在のロール（エミュレーターでは無視）
+    /// Current role (ignored by emulator)
     pub role: Option<String>,
 
-    /// セッションパラメータ
+    /// Session parameters
     pub parameters: HashMap<String, String>,
 
-    /// SQL 実行エンジン
+    /// SQL execution engine
     executor: Arc<Executor>,
 }
 
 impl Session {
-    /// 新しいセッションを作成
+    /// Create a new session
     pub fn new(executor: Arc<Executor>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -50,54 +50,54 @@ impl Session {
         }
     }
 
-    /// SQL を実行
+    /// Execute SQL
     pub async fn execute(&self, sql: &str) -> Result<StatementResponse> {
         self.executor.execute(sql).await
     }
 
-    /// データベースを設定
+    /// Set database
     pub fn use_database(&mut self, database: &str) {
         self.database = Some(database.to_uppercase());
     }
 
-    /// スキーマを設定
+    /// Set schema
     pub fn use_schema(&mut self, schema: &str) {
         self.schema = Some(schema.to_uppercase());
     }
 
-    /// ウェアハウスを設定
+    /// Set warehouse
     pub fn use_warehouse(&mut self, warehouse: &str) {
         self.warehouse = Some(warehouse.to_uppercase());
     }
 
-    /// ロールを設定
+    /// Set role
     pub fn use_role(&mut self, role: &str) {
         self.role = Some(role.to_uppercase());
     }
 
-    /// パラメータを設定
+    /// Set parameter
     pub fn set_parameter(&mut self, key: &str, value: &str) {
         self.parameters
             .insert(key.to_uppercase(), value.to_string());
     }
 
-    /// パラメータを取得
+    /// Get parameter
     pub fn get_parameter(&self, key: &str) -> Option<&String> {
         self.parameters.get(&key.to_uppercase())
     }
 }
 
-/// セッションマネージャー
+/// Session manager
 pub struct SessionManager {
-    /// セッション一覧
+    /// Session list
     sessions: RwLock<HashMap<String, Arc<RwLock<Session>>>>,
 
-    /// 共有エグゼキューター
+    /// Shared executor
     executor: Arc<Executor>,
 }
 
 impl SessionManager {
-    /// 新しいセッションマネージャーを作成
+    /// Create a new session manager
     pub fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
@@ -105,7 +105,7 @@ impl SessionManager {
         }
     }
 
-    /// 新しいセッションを作成
+    /// Create a new session
     pub fn create_session(&self) -> Arc<RwLock<Session>> {
         let session = Session::new(self.executor.clone());
         let session_id = session.id.clone();
@@ -116,17 +116,17 @@ impl SessionManager {
         session
     }
 
-    /// セッションを取得
+    /// Get session
     pub fn get_session(&self, session_id: &str) -> Option<Arc<RwLock<Session>>> {
         self.sessions.read().get(session_id).cloned()
     }
 
-    /// セッションを削除
+    /// Remove session
     pub fn remove_session(&self, session_id: &str) {
         self.sessions.write().remove(session_id);
     }
 
-    /// エグゼキューターへの参照を取得
+    /// Get executor reference
     pub fn executor(&self) -> &Arc<Executor> {
         &self.executor
     }

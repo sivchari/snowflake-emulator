@@ -1,6 +1,6 @@
 //! Snowflake Catalog Management
 //!
-//! データベース、スキーマ、テーブルの管理
+//! Database, schema, and table management
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,23 +10,23 @@ use parking_lot::RwLock;
 
 use crate::error::{Error, Result};
 
-/// Snowflake カタログ
+/// Snowflake catalog
 ///
-/// DataFusion のカタログシステムをラップし、Snowflake の
-/// DATABASE.SCHEMA.TABLE 構造を提供する
+/// Wraps DataFusion's catalog system to provide Snowflake's
+/// DATABASE.SCHEMA.TABLE structure
 pub struct SnowflakeCatalog {
-    /// データベース一覧（データベース名 → DataFusion カタログ名）
+    /// Database list (database name -> DataFusion catalog name)
     databases: RwLock<HashMap<String, String>>,
 
-    /// 現在のデータベース
+    /// Current database
     current_database: RwLock<Option<String>>,
 
-    /// 現在のスキーマ
+    /// Current schema
     current_schema: RwLock<Option<String>>,
 }
 
 impl SnowflakeCatalog {
-    /// 新しいカタログを作成
+    /// Create a new catalog
     pub fn new() -> Self {
         Self {
             databases: RwLock::new(HashMap::new()),
@@ -35,13 +35,13 @@ impl SnowflakeCatalog {
         }
     }
 
-    /// データベースを作成
+    /// Create a database
     pub fn create_database(&self, ctx: &SessionContext, name: &str) -> Result<()> {
         let name_upper = name.to_uppercase();
 
-        // DataFusion のカタログとして登録
-        // DataFusion はデフォルトで "datafusion" カタログを持つ
-        // Snowflake の DATABASE は DataFusion の catalog に対応
+        // Register as DataFusion catalog
+        // DataFusion has a default "datafusion" catalog
+        // Snowflake DATABASE maps to DataFusion catalog
         let catalog_name = format!("sf_{}", name_upper.to_lowercase());
 
         let catalog = datafusion::catalog::MemoryCatalogProvider::new();
@@ -51,19 +51,19 @@ impl SnowflakeCatalog {
         Ok(())
     }
 
-    /// データベースを削除
+    /// Drop a database
     pub fn drop_database(&self, name: &str) -> Result<()> {
         let name_upper = name.to_uppercase();
         self.databases.write().remove(&name_upper);
         Ok(())
     }
 
-    /// データベースが存在するか確認
+    /// Check if database exists
     pub fn database_exists(&self, name: &str) -> bool {
         self.databases.read().contains_key(&name.to_uppercase())
     }
 
-    /// 現在のデータベースを設定
+    /// Set current database
     pub fn use_database(&self, name: &str) -> Result<()> {
         let name_upper = name.to_uppercase();
         if !self.database_exists(&name_upper) {
@@ -73,28 +73,28 @@ impl SnowflakeCatalog {
         Ok(())
     }
 
-    /// 現在のスキーマを設定
+    /// Set current schema
     pub fn use_schema(&self, name: &str) -> Result<()> {
         *self.current_schema.write() = Some(name.to_uppercase());
         Ok(())
     }
 
-    /// 現在のデータベースを取得
+    /// Get current database
     pub fn current_database(&self) -> Option<String> {
         self.current_database.read().clone()
     }
 
-    /// 現在のスキーマを取得
+    /// Get current schema
     pub fn current_schema(&self) -> Option<String> {
         self.current_schema.read().clone()
     }
 
-    /// DataFusion カタログ名を取得
+    /// Get DataFusion catalog name
     pub fn get_catalog_name(&self, database: &str) -> Option<String> {
         self.databases.read().get(&database.to_uppercase()).cloned()
     }
 
-    /// データベース一覧を取得
+    /// List databases
     pub fn list_databases(&self) -> Vec<String> {
         self.databases.read().keys().cloned().collect()
     }
