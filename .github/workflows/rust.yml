@@ -6,6 +6,8 @@ on:
       - "cli/**"
       - "sf/**"
       - "server/**"
+      - "engine/**"
+  workflow_dispatch:
 
 jobs:
   test:
