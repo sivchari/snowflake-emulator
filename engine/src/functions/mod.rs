@@ -32,6 +32,7 @@
 mod conditional;
 mod datetime;
 mod flatten;
+mod helpers;
 mod json;
 mod try_functions;
 
