@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 wasm-bindgen = {version = "0.2.63", features = ["serde-serialize"]}
-sf = {path = "../sf"}
+engine = {path = "../engine"}
 
 [lib]
 crate-type = ["cdylib"]
