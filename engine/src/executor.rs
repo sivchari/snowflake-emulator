@@ -45,6 +45,11 @@ impl Executor {
         // Date/Time functions
         ctx.register_udf(functions::dateadd());
         ctx.register_udf(functions::datediff());
+        ctx.register_udf(functions::to_date());
+        ctx.register_udf(functions::to_timestamp_udf());
+        ctx.register_udf(functions::last_day());
+        ctx.register_udf(functions::dayname());
+        ctx.register_udf(functions::monthname());
 
         // TRY_* functions
         ctx.register_udf(functions::try_parse_json());

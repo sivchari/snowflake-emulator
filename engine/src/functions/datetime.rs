@@ -550,6 +550,783 @@ pub fn datediff() -> ScalarUDF {
     ScalarUDF::from(DateDiffFunc::new())
 }
 
+// ============================================================================
+// TO_DATE(string_expr [, format])
+// ============================================================================
+
+/// TO_DATE function - Convert a string to a date
+///
+/// Syntax: TO_DATE(string_expr [, format])
+/// Returns a date value from the input string.
+#[derive(Debug)]
+pub struct ToDateFunc {
+    signature: Signature,
+}
+
+impl Default for ToDateFunc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ToDateFunc {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::new(TypeSignature::VariadicAny, Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for ToDateFunc {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "to_date"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Date32)
+    }
+
+    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+        if args.is_empty() {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "TO_DATE requires at least 1 argument".to_string(),
+            ));
+        }
+
+        let input = &args[0];
+
+        // Handle scalar case
+        match input {
+            ColumnarValue::Scalar(scalar) => {
+                let result = to_date_scalar(scalar)?;
+                Ok(ColumnarValue::Scalar(result))
+            }
+            ColumnarValue::Array(arr) => {
+                let result = to_date_array(arr)?;
+                Ok(ColumnarValue::Array(result))
+            }
+        }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        None
+    }
+}
+
+fn to_date_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
+    match scalar {
+        ScalarValue::Utf8(Some(s)) => {
+            // Try multiple date formats
+            let formats = [
+                "%Y-%m-%d",
+                "%Y/%m/%d",
+                "%d-%m-%Y",
+                "%d/%m/%Y",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S",
+            ];
+
+            for fmt in &formats {
+                if let Ok(date) = NaiveDate::parse_from_str(s, fmt) {
+                    let days = date.num_days_from_ce() - 719163;
+                    return Ok(ScalarValue::Date32(Some(days)));
+                }
+                if let Ok(datetime) = NaiveDateTime::parse_from_str(s, fmt) {
+                    let days = datetime.date().num_days_from_ce() - 719163;
+                    return Ok(ScalarValue::Date32(Some(days)));
+                }
+            }
+
+            Err(datafusion::error::DataFusionError::Execution(format!(
+                "Cannot parse '{}' as date",
+                s
+            )))
+        }
+        ScalarValue::Date32(_) => Ok(scalar.clone()),
+        ScalarValue::Date64(Some(ms)) => {
+            let days = (*ms / 86400000) as i32;
+            Ok(ScalarValue::Date32(Some(days)))
+        }
+        ScalarValue::Utf8(None) | ScalarValue::Date32(None) | ScalarValue::Date64(None) => {
+            Ok(ScalarValue::Date32(None))
+        }
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "TO_DATE argument must be a string or date".to_string(),
+        )),
+    }
+}
+
+fn to_date_array(array: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+    match array.data_type() {
+        DataType::Utf8 => {
+            let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
+            let result: Date32Array = arr
+                .iter()
+                .map(|opt| {
+                    opt.and_then(|s| {
+                        let formats = [
+                            "%Y-%m-%d",
+                            "%Y/%m/%d",
+                            "%d-%m-%Y",
+                            "%d/%m/%Y",
+                            "%Y-%m-%d %H:%M:%S",
+                        ];
+                        for fmt in &formats {
+                            if let Ok(date) = NaiveDate::parse_from_str(s, fmt) {
+                                return Some(date.num_days_from_ce() - 719163);
+                            }
+                            if let Ok(datetime) = NaiveDateTime::parse_from_str(s, fmt) {
+                                return Some(datetime.date().num_days_from_ce() - 719163);
+                            }
+                        }
+                        None
+                    })
+                })
+                .collect();
+            Ok(Arc::new(result))
+        }
+        DataType::Date32 => Ok(array.clone()),
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "TO_DATE argument must be a string or date".to_string(),
+        )),
+    }
+}
+
+/// Create TO_DATE scalar UDF
+pub fn to_date() -> ScalarUDF {
+    ScalarUDF::from(ToDateFunc::new())
+}
+
+// ============================================================================
+// TO_TIMESTAMP(string_expr [, format])
+// ============================================================================
+
+/// TO_TIMESTAMP function - Convert a string to a timestamp
+///
+/// Syntax: TO_TIMESTAMP(string_expr [, format])
+/// Returns a timestamp value from the input string.
+#[derive(Debug)]
+pub struct ToTimestampFunc {
+    signature: Signature,
+}
+
+impl Default for ToTimestampFunc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ToTimestampFunc {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::new(TypeSignature::VariadicAny, Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for ToTimestampFunc {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "to_timestamp"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Timestamp(
+            arrow::datatypes::TimeUnit::Nanosecond,
+            None,
+        ))
+    }
+
+    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+        if args.is_empty() {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "TO_TIMESTAMP requires at least 1 argument".to_string(),
+            ));
+        }
+
+        let input = &args[0];
+
+        match input {
+            ColumnarValue::Scalar(scalar) => {
+                let result = to_timestamp_scalar(scalar)?;
+                Ok(ColumnarValue::Scalar(result))
+            }
+            ColumnarValue::Array(arr) => {
+                let result = to_timestamp_array(arr)?;
+                Ok(ColumnarValue::Array(result))
+            }
+        }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        None
+    }
+}
+
+fn to_timestamp_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
+    match scalar {
+        ScalarValue::Utf8(Some(s)) => {
+            // Try multiple datetime formats
+            let formats = [
+                "%Y-%m-%d %H:%M:%S%.f",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S%.f",
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d",
+                "%Y/%m/%d %H:%M:%S",
+                "%Y/%m/%d",
+            ];
+
+            for fmt in &formats {
+                if let Ok(datetime) = NaiveDateTime::parse_from_str(s, fmt) {
+                    let nanos = datetime.and_utc().timestamp_nanos_opt().ok_or_else(|| {
+                        datafusion::error::DataFusionError::Execution(
+                            "Timestamp out of range".to_string(),
+                        )
+                    })?;
+                    return Ok(ScalarValue::TimestampNanosecond(Some(nanos), None));
+                }
+                // Also try parsing as date only
+                if let Ok(date) = NaiveDate::parse_from_str(s, fmt) {
+                    let datetime = date.and_hms_opt(0, 0, 0).unwrap();
+                    let nanos = datetime.and_utc().timestamp_nanos_opt().ok_or_else(|| {
+                        datafusion::error::DataFusionError::Execution(
+                            "Timestamp out of range".to_string(),
+                        )
+                    })?;
+                    return Ok(ScalarValue::TimestampNanosecond(Some(nanos), None));
+                }
+            }
+
+            Err(datafusion::error::DataFusionError::Execution(format!(
+                "Cannot parse '{}' as timestamp",
+                s
+            )))
+        }
+        ScalarValue::Int64(Some(epoch)) => {
+            // Assume seconds since Unix epoch
+            let nanos = *epoch * 1_000_000_000;
+            Ok(ScalarValue::TimestampNanosecond(Some(nanos), None))
+        }
+        ScalarValue::TimestampNanosecond(_, _) => Ok(scalar.clone()),
+        ScalarValue::Utf8(None) | ScalarValue::Int64(None) => {
+            Ok(ScalarValue::TimestampNanosecond(None, None))
+        }
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "TO_TIMESTAMP argument must be a string or integer".to_string(),
+        )),
+    }
+}
+
+fn to_timestamp_array(array: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+    use arrow::array::TimestampNanosecondArray;
+
+    match array.data_type() {
+        DataType::Utf8 => {
+            let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
+            let result: TimestampNanosecondArray = arr
+                .iter()
+                .map(|opt| {
+                    opt.and_then(|s| {
+                        let formats = [
+                            "%Y-%m-%d %H:%M:%S%.f",
+                            "%Y-%m-%d %H:%M:%S",
+                            "%Y-%m-%dT%H:%M:%S",
+                            "%Y-%m-%d",
+                        ];
+                        for fmt in &formats {
+                            if let Ok(datetime) = NaiveDateTime::parse_from_str(s, fmt) {
+                                return datetime.and_utc().timestamp_nanos_opt();
+                            }
+                            if let Ok(date) = NaiveDate::parse_from_str(s, fmt) {
+                                let datetime = date.and_hms_opt(0, 0, 0).unwrap();
+                                return datetime.and_utc().timestamp_nanos_opt();
+                            }
+                        }
+                        None
+                    })
+                })
+                .collect();
+            Ok(Arc::new(result))
+        }
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "TO_TIMESTAMP argument must be a string".to_string(),
+        )),
+    }
+}
+
+/// Create TO_TIMESTAMP scalar UDF
+pub fn to_timestamp_udf() -> ScalarUDF {
+    ScalarUDF::from(ToTimestampFunc::new())
+}
+
+// ============================================================================
+// LAST_DAY(date_expr)
+// ============================================================================
+
+/// LAST_DAY function - Return the last day of the month
+///
+/// Syntax: LAST_DAY(date_expr)
+/// Returns the last day of the month for the given date.
+#[derive(Debug)]
+pub struct LastDayFunc {
+    signature: Signature,
+}
+
+impl Default for LastDayFunc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LastDayFunc {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::new(TypeSignature::Any(1), Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for LastDayFunc {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "last_day"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Date32)
+    }
+
+    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+        if args.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "LAST_DAY requires exactly 1 argument".to_string(),
+            ));
+        }
+
+        let input = &args[0];
+
+        match input {
+            ColumnarValue::Scalar(scalar) => {
+                let result = last_day_scalar(scalar)?;
+                Ok(ColumnarValue::Scalar(result))
+            }
+            ColumnarValue::Array(arr) => {
+                let result = last_day_array(arr)?;
+                Ok(ColumnarValue::Array(result))
+            }
+        }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        None
+    }
+}
+
+fn get_last_day_of_month(year: i32, month: u32) -> NaiveDate {
+    // Get first day of next month, then subtract one day
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    NaiveDate::from_ymd_opt(next_year, next_month, 1)
+        .unwrap()
+        .pred_opt()
+        .unwrap()
+}
+
+fn last_day_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
+    match scalar {
+        ScalarValue::Date32(Some(days)) => {
+            let date = NaiveDate::from_num_days_from_ce_opt(*days + 719163).ok_or_else(|| {
+                datafusion::error::DataFusionError::Execution("Invalid date".to_string())
+            })?;
+            let last_day = get_last_day_of_month(date.year(), date.month());
+            let new_days = last_day.num_days_from_ce() - 719163;
+            Ok(ScalarValue::Date32(Some(new_days)))
+        }
+        ScalarValue::Utf8(Some(s)) => {
+            let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "Cannot parse '{}' as date",
+                    s
+                ))
+            })?;
+            let last_day = get_last_day_of_month(date.year(), date.month());
+            let new_days = last_day.num_days_from_ce() - 719163;
+            Ok(ScalarValue::Date32(Some(new_days)))
+        }
+        ScalarValue::Date32(None) | ScalarValue::Utf8(None) => Ok(ScalarValue::Date32(None)),
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "LAST_DAY argument must be a date".to_string(),
+        )),
+    }
+}
+
+fn last_day_array(array: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+    match array.data_type() {
+        DataType::Date32 => {
+            let arr = array.as_any().downcast_ref::<Date32Array>().unwrap();
+            let result: Date32Array = arr
+                .iter()
+                .map(|opt| {
+                    opt.and_then(|days| {
+                        let date = NaiveDate::from_num_days_from_ce_opt(days + 719163)?;
+                        let last_day = get_last_day_of_month(date.year(), date.month());
+                        Some(last_day.num_days_from_ce() - 719163)
+                    })
+                })
+                .collect();
+            Ok(Arc::new(result))
+        }
+        DataType::Utf8 => {
+            let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
+            let result: Date32Array = arr
+                .iter()
+                .map(|opt| {
+                    opt.and_then(|s| {
+                        let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+                        let last_day = get_last_day_of_month(date.year(), date.month());
+                        Some(last_day.num_days_from_ce() - 719163)
+                    })
+                })
+                .collect();
+            Ok(Arc::new(result))
+        }
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "LAST_DAY argument must be a date".to_string(),
+        )),
+    }
+}
+
+/// Create LAST_DAY scalar UDF
+pub fn last_day() -> ScalarUDF {
+    ScalarUDF::from(LastDayFunc::new())
+}
+
+// ============================================================================
+// DAYNAME(date_expr)
+// ============================================================================
+
+/// DAYNAME function - Return the name of the day of the week
+///
+/// Syntax: DAYNAME(date_expr)
+/// Returns the name of the weekday (e.g., 'Mon', 'Tue', etc.)
+#[derive(Debug)]
+pub struct DayNameFunc {
+    signature: Signature,
+}
+
+impl Default for DayNameFunc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DayNameFunc {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::new(TypeSignature::Any(1), Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for DayNameFunc {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "dayname"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+        if args.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "DAYNAME requires exactly 1 argument".to_string(),
+            ));
+        }
+
+        let input = &args[0];
+
+        match input {
+            ColumnarValue::Scalar(scalar) => {
+                let result = dayname_scalar(scalar)?;
+                Ok(ColumnarValue::Scalar(result))
+            }
+            ColumnarValue::Array(arr) => {
+                let result = dayname_array(arr)?;
+                Ok(ColumnarValue::Array(result))
+            }
+        }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        None
+    }
+}
+
+fn get_day_name(date: &NaiveDate) -> &'static str {
+    match date.weekday() {
+        chrono::Weekday::Mon => "Mon",
+        chrono::Weekday::Tue => "Tue",
+        chrono::Weekday::Wed => "Wed",
+        chrono::Weekday::Thu => "Thu",
+        chrono::Weekday::Fri => "Fri",
+        chrono::Weekday::Sat => "Sat",
+        chrono::Weekday::Sun => "Sun",
+    }
+}
+
+fn dayname_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
+    match scalar {
+        ScalarValue::Date32(Some(days)) => {
+            let date = NaiveDate::from_num_days_from_ce_opt(*days + 719163).ok_or_else(|| {
+                datafusion::error::DataFusionError::Execution("Invalid date".to_string())
+            })?;
+            Ok(ScalarValue::Utf8(Some(get_day_name(&date).to_string())))
+        }
+        ScalarValue::Utf8(Some(s)) => {
+            let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "Cannot parse '{}' as date",
+                    s
+                ))
+            })?;
+            Ok(ScalarValue::Utf8(Some(get_day_name(&date).to_string())))
+        }
+        ScalarValue::Date32(None) | ScalarValue::Utf8(None) => Ok(ScalarValue::Utf8(None)),
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "DAYNAME argument must be a date".to_string(),
+        )),
+    }
+}
+
+fn dayname_array(array: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+    match array.data_type() {
+        DataType::Date32 => {
+            let arr = array.as_any().downcast_ref::<Date32Array>().unwrap();
+            let result: StringArray = arr
+                .iter()
+                .map(|opt| {
+                    opt.and_then(|days| {
+                        let date = NaiveDate::from_num_days_from_ce_opt(days + 719163)?;
+                        Some(get_day_name(&date).to_string())
+                    })
+                })
+                .collect();
+            Ok(Arc::new(result))
+        }
+        DataType::Utf8 => {
+            let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
+            let result: StringArray = arr
+                .iter()
+                .map(|opt| {
+                    opt.and_then(|s| {
+                        let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+                        Some(get_day_name(&date).to_string())
+                    })
+                })
+                .collect();
+            Ok(Arc::new(result))
+        }
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "DAYNAME argument must be a date".to_string(),
+        )),
+    }
+}
+
+/// Create DAYNAME scalar UDF
+pub fn dayname() -> ScalarUDF {
+    ScalarUDF::from(DayNameFunc::new())
+}
+
+// ============================================================================
+// MONTHNAME(date_expr)
+// ============================================================================
+
+/// MONTHNAME function - Return the name of the month
+///
+/// Syntax: MONTHNAME(date_expr)
+/// Returns the name of the month (e.g., 'Jan', 'Feb', etc.)
+#[derive(Debug)]
+pub struct MonthNameFunc {
+    signature: Signature,
+}
+
+impl Default for MonthNameFunc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MonthNameFunc {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::new(TypeSignature::Any(1), Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for MonthNameFunc {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "monthname"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+        if args.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "MONTHNAME requires exactly 1 argument".to_string(),
+            ));
+        }
+
+        let input = &args[0];
+
+        match input {
+            ColumnarValue::Scalar(scalar) => {
+                let result = monthname_scalar(scalar)?;
+                Ok(ColumnarValue::Scalar(result))
+            }
+            ColumnarValue::Array(arr) => {
+                let result = monthname_array(arr)?;
+                Ok(ColumnarValue::Array(result))
+            }
+        }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        None
+    }
+}
+
+fn get_month_name(month: u32) -> &'static str {
+    match month {
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
+        _ => "Unknown",
+    }
+}
+
+fn monthname_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
+    match scalar {
+        ScalarValue::Date32(Some(days)) => {
+            let date = NaiveDate::from_num_days_from_ce_opt(*days + 719163).ok_or_else(|| {
+                datafusion::error::DataFusionError::Execution("Invalid date".to_string())
+            })?;
+            Ok(ScalarValue::Utf8(Some(
+                get_month_name(date.month()).to_string(),
+            )))
+        }
+        ScalarValue::Utf8(Some(s)) => {
+            let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "Cannot parse '{}' as date",
+                    s
+                ))
+            })?;
+            Ok(ScalarValue::Utf8(Some(
+                get_month_name(date.month()).to_string(),
+            )))
+        }
+        ScalarValue::Date32(None) | ScalarValue::Utf8(None) => Ok(ScalarValue::Utf8(None)),
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "MONTHNAME argument must be a date".to_string(),
+        )),
+    }
+}
+
+fn monthname_array(array: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+    match array.data_type() {
+        DataType::Date32 => {
+            let arr = array.as_any().downcast_ref::<Date32Array>().unwrap();
+            let result: StringArray = arr
+                .iter()
+                .map(|opt| {
+                    opt.and_then(|days| {
+                        let date = NaiveDate::from_num_days_from_ce_opt(days + 719163)?;
+                        Some(get_month_name(date.month()).to_string())
+                    })
+                })
+                .collect();
+            Ok(Arc::new(result))
+        }
+        DataType::Utf8 => {
+            let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
+            let result: StringArray = arr
+                .iter()
+                .map(|opt| {
+                    opt.and_then(|s| {
+                        let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+                        Some(get_month_name(date.month()).to_string())
+                    })
+                })
+                .collect();
+            Ok(Arc::new(result))
+        }
+        _ => Err(datafusion::error::DataFusionError::Execution(
+            "MONTHNAME argument must be a date".to_string(),
+        )),
+    }
+}
+
+/// Create MONTHNAME scalar UDF
+pub fn monthname() -> ScalarUDF {
+    ScalarUDF::from(MonthNameFunc::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,6 +1447,69 @@ mod tests {
             assert_eq!(v, 5);
         } else {
             panic!("Expected scalar int64");
+        }
+    }
+
+    #[test]
+    fn test_to_date() {
+        let func = ToDateFunc::new();
+
+        let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
+        let result = func.invoke_batch(&[input], 1).unwrap();
+
+        if let ColumnarValue::Scalar(ScalarValue::Date32(Some(days))) = result {
+            let date = NaiveDate::from_num_days_from_ce_opt(days + 719163).unwrap();
+            assert_eq!(date.year(), 2024);
+            assert_eq!(date.month(), 1);
+            assert_eq!(date.day(), 15);
+        } else {
+            panic!("Expected scalar Date32");
+        }
+    }
+
+    #[test]
+    fn test_last_day() {
+        let func = LastDayFunc::new();
+
+        let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-02-15".to_string())));
+        let result = func.invoke_batch(&[input], 1).unwrap();
+
+        if let ColumnarValue::Scalar(ScalarValue::Date32(Some(days))) = result {
+            let date = NaiveDate::from_num_days_from_ce_opt(days + 719163).unwrap();
+            assert_eq!(date.year(), 2024);
+            assert_eq!(date.month(), 2);
+            assert_eq!(date.day(), 29); // 2024 is a leap year
+        } else {
+            panic!("Expected scalar Date32");
+        }
+    }
+
+    #[test]
+    fn test_dayname() {
+        let func = DayNameFunc::new();
+
+        // 2024-01-15 is a Monday
+        let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
+        let result = func.invoke_batch(&[input], 1).unwrap();
+
+        if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(name))) = result {
+            assert_eq!(name, "Mon");
+        } else {
+            panic!("Expected scalar Utf8");
+        }
+    }
+
+    #[test]
+    fn test_monthname() {
+        let func = MonthNameFunc::new();
+
+        let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-03-15".to_string())));
+        let result = func.invoke_batch(&[input], 1).unwrap();
+
+        if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(name))) = result {
+            assert_eq!(name, "Mar");
+        } else {
+            panic!("Expected scalar Utf8");
         }
     }
 }

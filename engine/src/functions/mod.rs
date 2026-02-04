@@ -96,7 +96,7 @@ pub use conditional::{iff, nvl, nvl2};
 pub use json::{parse_json, to_json};
 
 // Date/Time functions
-pub use datetime::{dateadd, datediff};
+pub use datetime::{dateadd, datediff, dayname, last_day, monthname, to_date, to_timestamp_udf};
 
 // TRY_* functions
 pub use try_functions::{try_parse_json, try_to_boolean, try_to_date, try_to_number};
