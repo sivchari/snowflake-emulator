@@ -82,6 +82,7 @@ mod array;
 mod conditional;
 mod datetime;
 mod flatten;
+mod hash;
 mod helpers;
 mod json;
 mod numeric;
@@ -133,3 +134,6 @@ pub use aggregate::{array_agg, listagg, object_agg};
 
 // Numeric functions
 pub use numeric::{div0, div0null};
+
+// Hash functions
+pub use hash::{sha1_hex, sha2};
