@@ -8,6 +8,7 @@ pub mod executor;
 pub mod functions;
 pub mod protocol;
 pub mod session;
+pub mod sql_rewriter;
 
 pub use error::{Error, Result};
 pub use executor::Executor;

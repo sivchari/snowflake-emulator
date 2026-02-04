@@ -4,8 +4,9 @@
 
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
+use arrow::array::{Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
+use datafusion::datasource::MemTable;
 use datafusion::prelude::*;
 use uuid::Uuid;
 
@@ -13,6 +14,7 @@ use crate::catalog::SnowflakeCatalog;
 use crate::error::Result;
 use crate::functions;
 use crate::protocol::{ColumnMetaData, StatementResponse};
+use crate::sql_rewriter;
 
 /// SQL execution engine
 pub struct Executor {
@@ -106,6 +108,18 @@ impl Executor {
         ctx.register_udaf(functions::object_agg());
         ctx.register_udaf(functions::listagg());
 
+        // Register _NUMBERS table for FLATTEN support (0-999)
+        let numbers_schema = Arc::new(Schema::new(vec![Field::new("idx", DataType::Int64, false)]));
+        let numbers: Vec<i64> = (0..1000).collect();
+        let numbers_array = Int64Array::from(numbers);
+        let numbers_batch =
+            RecordBatch::try_new(numbers_schema.clone(), vec![Arc::new(numbers_array)])
+                .expect("Failed to create numbers batch");
+        let numbers_table =
+            MemTable::try_new(numbers_schema, vec![vec![numbers_batch]]).expect("Failed to create numbers table");
+        ctx.register_table("_numbers", Arc::new(numbers_table))
+            .expect("Failed to register _NUMBERS table");
+
         Self { ctx, catalog }
     }
 
@@ -113,8 +127,11 @@ impl Executor {
     pub async fn execute(&self, sql: &str) -> Result<StatementResponse> {
         let statement_handle = Uuid::new_v4().to_string();
 
+        // Rewrite Snowflake-specific SQL constructs
+        let rewritten_sql = sql_rewriter::rewrite(sql);
+
         // Execute SQL with DataFusion
-        let df = self.ctx.sql(sql).await?;
+        let df = self.ctx.sql(&rewritten_sql).await?;
 
         // Collect results
         let batches = df.collect().await?;
@@ -430,5 +447,80 @@ mod tests {
         // SUM/AVG results depend on DataFusion type inference
         assert!(data[0][1] == Some("600".to_string()) || data[0][1] == Some("600.0".to_string()));
         assert!(data[0][2] == Some("200".to_string()) || data[0][2] == Some("200.0".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_numbers_table() {
+        let executor = Executor::new();
+
+        // Test that _NUMBERS table exists and has expected values
+        let response = executor
+            .execute("SELECT COUNT(*) FROM _numbers")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("1000".to_string()));
+
+        // Test selecting specific range
+        let response = executor
+            .execute("SELECT idx FROM _numbers WHERE idx < 5 ORDER BY idx")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 5);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("0".to_string()));
+        assert_eq!(data[4][0], Some("4".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_lateral_flatten() {
+        let executor = Executor::new();
+
+        // Create table with JSON array column
+        executor
+            .execute("CREATE TABLE test_flatten (id INT, arr VARCHAR)")
+            .await
+            .unwrap();
+
+        // Insert data with JSON arrays
+        executor
+            .execute("INSERT INTO test_flatten VALUES (1, '[10, 20, 30]'), (2, '[40, 50]')")
+            .await
+            .unwrap();
+
+        // Test LATERAL FLATTEN
+        let response = executor
+            .execute(
+                "SELECT t.id, f.value FROM test_flatten t, LATERAL FLATTEN(input => t.arr) f ORDER BY t.id, f.index",
+            )
+            .await
+            .unwrap();
+
+        // Should get 5 rows: 3 from id=1, 2 from id=2
+        assert_eq!(response.result_set_meta_data.num_rows, 5);
+        let data = response.data.unwrap();
+
+        // First row: id=1, value=10
+        assert_eq!(data[0][0], Some("1".to_string()));
+        assert_eq!(data[0][1], Some("10".to_string()));
+
+        // Second row: id=1, value=20
+        assert_eq!(data[1][0], Some("1".to_string()));
+        assert_eq!(data[1][1], Some("20".to_string()));
+
+        // Third row: id=1, value=30
+        assert_eq!(data[2][0], Some("1".to_string()));
+        assert_eq!(data[2][1], Some("30".to_string()));
+
+        // Fourth row: id=2, value=40
+        assert_eq!(data[3][0], Some("2".to_string()));
+        assert_eq!(data[3][1], Some("40".to_string()));
+
+        // Fifth row: id=2, value=50
+        assert_eq!(data[4][0], Some("2".to_string()));
+        assert_eq!(data[4][1], Some("50".to_string()));
     }
 }

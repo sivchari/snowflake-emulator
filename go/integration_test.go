@@ -1177,3 +1177,103 @@ func TestListagg(t *testing.T) {
 		t.Errorf("Expected %s, got %s", expected, result)
 	}
 }
+
+// =============================================================================
+// LATERAL FLATTEN Tests
+// =============================================================================
+
+func TestLateralFlatten(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create test table with JSON array
+	_, err := db.Exec("CREATE TABLE test_lateral (id INT, arr VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_lateral")
+
+	// Insert test data
+	_, err = db.Exec("INSERT INTO test_lateral VALUES (1, '[10, 20, 30]'), (2, '[40, 50]')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Test LATERAL FLATTEN
+	rows, err := db.Query("SELECT t.id, f.value FROM test_lateral t, LATERAL FLATTEN(input => t.arr) f ORDER BY t.id, f.index")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []struct {
+		id    int
+		value string
+	}{
+		{1, "10"},
+		{1, "20"},
+		{1, "30"},
+		{2, "40"},
+		{2, "50"},
+	}
+
+	i := 0
+	for rows.Next() {
+		var id int
+		var value string
+		if err := rows.Scan(&id, &value); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if i >= len(expected) {
+			t.Fatalf("More rows than expected")
+		}
+		if id != expected[i].id || value != expected[i].value {
+			t.Errorf("Row %d: expected (%d, %s), got (%d, %s)", i, expected[i].id, expected[i].value, id, value)
+		}
+		i++
+	}
+
+	if i != len(expected) {
+		t.Errorf("Expected %d rows, got %d", len(expected), i)
+	}
+}
+
+func TestNumbersTable(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Test _numbers table exists and has expected values
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM _numbers").Scan(&count)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if count != 1000 {
+		t.Errorf("Expected 1000 rows in _numbers, got %d", count)
+	}
+
+	// Test selecting specific range
+	rows, err := db.Query("SELECT idx FROM _numbers WHERE idx < 5 ORDER BY idx")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []int64{0, 1, 2, 3, 4}
+	i := 0
+	for rows.Next() {
+		var idx int64
+		if err := rows.Scan(&idx); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if idx != expected[i] {
+			t.Errorf("Expected idx %d, got %d", expected[i], idx)
+		}
+		i++
+	}
+
+	if i != len(expected) {
+		t.Errorf("Expected %d rows, got %d", len(expected), i)
+	}
+}

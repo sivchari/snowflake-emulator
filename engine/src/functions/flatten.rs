@@ -15,7 +15,7 @@ use datafusion::logical_expr::{
     ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
-use super::helpers::{safe_index, safe_index_i32};
+use super::helpers::safe_index;
 
 // ============================================================================
 // FLATTEN scalar helper functions
@@ -72,55 +72,145 @@ impl ScalarUDFImpl for FlattenArrayFunc {
         let array_json = &args[0];
         let index = &args[1];
 
-        // Get index value with validation for negative values
-        let idx = match index {
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(i))) => safe_index(*i),
-            ColumnarValue::Scalar(ScalarValue::Int32(Some(i))) => safe_index_i32(*i),
-            _ => {
-                return Err(datafusion::error::DataFusionError::Execution(
-                    "FLATTEN_ARRAY second argument must be an integer".to_string(),
-                ))
-            }
-        };
-
-        // Return NULL for negative indices
-        let Some(idx) = idx else {
-            return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)));
-        };
-
-        match array_json {
-            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
-                let result = extract_array_element(s, idx);
+        // Handle case when index is an array (from CROSS JOIN)
+        match (array_json, index) {
+            // Both scalar: simple case
+            (
+                ColumnarValue::Scalar(ScalarValue::Utf8(json_opt)),
+                ColumnarValue::Scalar(ScalarValue::Int64(idx_opt)),
+            ) => {
+                let result = match (json_opt, idx_opt) {
+                    (Some(json), Some(i)) => {
+                        if let Some(idx) = safe_index(*i) {
+                            extract_array_element(json, idx)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(result)))
             }
-            ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {
-                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)))
+
+            // JSON is array, index is scalar
+            (
+                ColumnarValue::Array(json_arr),
+                ColumnarValue::Scalar(ScalarValue::Int64(idx_opt)),
+            ) => {
+                let str_arr = json_arr
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| {
+                        datafusion::error::DataFusionError::Execution(
+                            "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
+                        )
+                    })?;
+
+                let idx = idx_opt.and_then(|i| safe_index(i));
+                let result: StringArray = if let Some(idx) = idx {
+                    str_arr
+                        .iter()
+                        .map(|opt| opt.and_then(|s| extract_array_element(s, idx)))
+                        .collect()
+                } else {
+                    str_arr.iter().map(|_| None::<String>).collect()
+                };
+
+                Ok(ColumnarValue::Array(Arc::new(result)))
             }
-            ColumnarValue::Array(arr) => {
-                let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
-                    )
-                })?;
+
+            // JSON is scalar, index is array (common in CROSS JOIN FLATTEN)
+            (ColumnarValue::Scalar(ScalarValue::Utf8(json_opt)), ColumnarValue::Array(idx_arr)) => {
+                let int_arr = idx_arr
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .ok_or_else(|| {
+                        datafusion::error::DataFusionError::Execution(
+                            "FLATTEN_ARRAY second argument must be an integer array".to_string(),
+                        )
+                    })?;
+
+                let result: StringArray = match json_opt {
+                    Some(json) => int_arr
+                        .iter()
+                        .map(|idx_opt| {
+                            idx_opt.and_then(|i| {
+                                safe_index(i).and_then(|idx| extract_array_element(json, idx))
+                            })
+                        })
+                        .collect(),
+                    None => int_arr.iter().map(|_| None::<String>).collect(),
+                };
+
+                Ok(ColumnarValue::Array(Arc::new(result)))
+            }
+
+            // Both arrays (full row-by-row processing)
+            (ColumnarValue::Array(json_arr), ColumnarValue::Array(idx_arr)) => {
+                let str_arr = json_arr
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| {
+                        datafusion::error::DataFusionError::Execution(
+                            "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
+                        )
+                    })?;
+
+                let int_arr = idx_arr
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .ok_or_else(|| {
+                        datafusion::error::DataFusionError::Execution(
+                            "FLATTEN_ARRAY second argument must be an integer array".to_string(),
+                        )
+                    })?;
 
                 let result: StringArray = str_arr
                     .iter()
-                    .map(|opt| opt.and_then(|s| extract_array_element(s, idx)))
+                    .zip(int_arr.iter())
+                    .map(|(json_opt, idx_opt)| match (json_opt, idx_opt) {
+                        (Some(json), Some(i)) => {
+                            safe_index(i).and_then(|idx| extract_array_element(json, idx))
+                        }
+                        _ => None,
+                    })
                     .collect();
 
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
+
+            // Handle other cases by converting to arrays
             _ => {
-                let arr = array_json.to_array(num_rows)?;
-                let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
-                    )
-                })?;
+                let json_arr = array_json.to_array(num_rows)?;
+                let idx_arr = index.to_array(num_rows)?;
+
+                let str_arr = json_arr
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| {
+                        datafusion::error::DataFusionError::Execution(
+                            "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
+                        )
+                    })?;
+
+                let int_arr = idx_arr
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .ok_or_else(|| {
+                        datafusion::error::DataFusionError::Execution(
+                            "FLATTEN_ARRAY second argument must be an integer".to_string(),
+                        )
+                    })?;
 
                 let result: StringArray = str_arr
                     .iter()
-                    .map(|opt| opt.and_then(|s| extract_array_element(s, idx)))
+                    .zip(int_arr.iter())
+                    .map(|(json_opt, idx_opt)| match (json_opt, idx_opt) {
+                        (Some(json), Some(i)) => {
+                            safe_index(i).and_then(|idx| extract_array_element(json, idx))
+                        }
+                        _ => None,
+                    })
                     .collect();
 
                 Ok(ColumnarValue::Array(Arc::new(result)))
