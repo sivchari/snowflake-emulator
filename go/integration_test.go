@@ -1277,3 +1277,176 @@ func TestNumbersTable(t *testing.T) {
 		t.Errorf("Expected %d rows, got %d", len(expected), i)
 	}
 }
+
+// =============================================================================
+// Window Function Tests
+// =============================================================================
+
+func TestWindowRowNumber(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create test table
+	_, err := db.Exec("CREATE TABLE test_win_rn (id INT, category VARCHAR, value INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_win_rn")
+
+	// Insert test data
+	_, err = db.Exec("INSERT INTO test_win_rn VALUES (1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Test ROW_NUMBER with PARTITION BY
+	rows, err := db.Query("SELECT id, ROW_NUMBER() OVER (PARTITION BY category ORDER BY value) as rn FROM test_win_rn ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []struct {
+		id int
+		rn int64
+	}{
+		{1, 1}, // category A, first
+		{2, 2}, // category A, second
+		{3, 1}, // category B, first
+		{4, 2}, // category B, second
+	}
+
+	i := 0
+	for rows.Next() {
+		var id int
+		var rn int64
+		if err := rows.Scan(&id, &rn); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if id != expected[i].id || rn != expected[i].rn {
+			t.Errorf("Row %d: expected (%d, %d), got (%d, %d)", i, expected[i].id, expected[i].rn, id, rn)
+		}
+		i++
+	}
+}
+
+func TestWindowRankDenseRank(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create test table
+	_, err := db.Exec("CREATE TABLE test_win_rank (id INT, score INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_win_rank")
+
+	// Insert test data with ties
+	_, err = db.Exec("INSERT INTO test_win_rank VALUES (1, 100), (2, 100), (3, 90), (4, 80)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Test RANK and DENSE_RANK
+	rows, err := db.Query("SELECT id, RANK() OVER (ORDER BY score DESC) as rnk, DENSE_RANK() OVER (ORDER BY score DESC) as drnk FROM test_win_rank ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []struct {
+		id   int
+		rnk  int64
+		drnk int64
+	}{
+		{1, 1, 1}, // score 100, rank 1, dense_rank 1
+		{2, 1, 1}, // score 100, rank 1 (tie), dense_rank 1
+		{3, 3, 2}, // score 90, rank 3 (skip 2), dense_rank 2
+		{4, 4, 3}, // score 80, rank 4, dense_rank 3
+	}
+
+	i := 0
+	for rows.Next() {
+		var id int
+		var rnk, drnk int64
+		if err := rows.Scan(&id, &rnk, &drnk); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if id != expected[i].id || rnk != expected[i].rnk || drnk != expected[i].drnk {
+			t.Errorf("Row %d: expected (%d, %d, %d), got (%d, %d, %d)",
+				i, expected[i].id, expected[i].rnk, expected[i].drnk, id, rnk, drnk)
+		}
+		i++
+	}
+}
+
+func TestWindowLagLead(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create test table
+	_, err := db.Exec("CREATE TABLE test_win_lag (id INT, value INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_win_lag")
+
+	// Insert test data
+	_, err = db.Exec("INSERT INTO test_win_lag VALUES (1, 10), (2, 20), (3, 30)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Test LAG and LEAD
+	rows, err := db.Query("SELECT id, LAG(value, 1) OVER (ORDER BY id) as prev_val, LEAD(value, 1) OVER (ORDER BY id) as next_val FROM test_win_lag ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id      int
+		prevVal *int
+		nextVal *int
+	}
+
+	ten := 10
+	twenty := 20
+	thirty := 30
+
+	expected := []row{
+		{1, nil, &twenty},  // first row: no prev, next=20
+		{2, &ten, &thirty}, // middle row: prev=10, next=30
+		{3, &twenty, nil},  // last row: prev=20, no next
+	}
+
+	i := 0
+	for rows.Next() {
+		var id int
+		var prevVal, nextVal *int
+		if err := rows.Scan(&id, &prevVal, &nextVal); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+
+		// Check id
+		if id != expected[i].id {
+			t.Errorf("Row %d: expected id %d, got %d", i, expected[i].id, id)
+		}
+
+		// Check prevVal
+		if (prevVal == nil) != (expected[i].prevVal == nil) {
+			t.Errorf("Row %d: prevVal nil mismatch", i)
+		} else if prevVal != nil && *prevVal != *expected[i].prevVal {
+			t.Errorf("Row %d: expected prevVal %d, got %d", i, *expected[i].prevVal, *prevVal)
+		}
+
+		// Check nextVal
+		if (nextVal == nil) != (expected[i].nextVal == nil) {
+			t.Errorf("Row %d: nextVal nil mismatch", i)
+		} else if nextVal != nil && *nextVal != *expected[i].nextVal {
+			t.Errorf("Row %d: expected nextVal %d, got %d", i, *expected[i].nextVal, *nextVal)
+		}
+
+		i++
+	}
+}

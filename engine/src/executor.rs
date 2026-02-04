@@ -523,4 +523,144 @@ mod tests {
         assert_eq!(data[4][0], Some("2".to_string()));
         assert_eq!(data[4][1], Some("50".to_string()));
     }
+
+    // =========================================================================
+    // Window Function Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_window_row_number() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE test_rn (id INT, category VARCHAR, value INT)")
+            .await
+            .unwrap();
+
+        executor
+            .execute(
+                "INSERT INTO test_rn VALUES (1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40)",
+            )
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, ROW_NUMBER() OVER (PARTITION BY category ORDER BY value) as rn FROM test_rn ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 4);
+        let data = response.data.unwrap();
+        // id=1 (category A, value 10) -> rn=1
+        assert_eq!(data[0][1], Some("1".to_string()));
+        // id=2 (category A, value 20) -> rn=2
+        assert_eq!(data[1][1], Some("2".to_string()));
+        // id=3 (category B, value 30) -> rn=1
+        assert_eq!(data[2][1], Some("1".to_string()));
+        // id=4 (category B, value 40) -> rn=2
+        assert_eq!(data[3][1], Some("2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_window_rank_dense_rank() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE test_rank (id INT, score INT)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO test_rank VALUES (1, 100), (2, 100), (3, 90), (4, 80)")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, RANK() OVER (ORDER BY score DESC) as rnk, DENSE_RANK() OVER (ORDER BY score DESC) as drnk FROM test_rank ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 4);
+        let data = response.data.unwrap();
+        // id=1, score=100 -> rank=1, dense_rank=1
+        assert_eq!(data[0][1], Some("1".to_string()));
+        assert_eq!(data[0][2], Some("1".to_string()));
+        // id=2, score=100 -> rank=1, dense_rank=1
+        assert_eq!(data[1][1], Some("1".to_string()));
+        assert_eq!(data[1][2], Some("1".to_string()));
+        // id=3, score=90 -> rank=3, dense_rank=2
+        assert_eq!(data[2][1], Some("3".to_string()));
+        assert_eq!(data[2][2], Some("2".to_string()));
+        // id=4, score=80 -> rank=4, dense_rank=3
+        assert_eq!(data[3][1], Some("4".to_string()));
+        assert_eq!(data[3][2], Some("3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_window_lag_lead() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE test_lag (id INT, value INT)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO test_lag VALUES (1, 10), (2, 20), (3, 30)")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, LAG(value, 1) OVER (ORDER BY id) as prev_val, LEAD(value, 1) OVER (ORDER BY id) as next_val FROM test_lag ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 3);
+        let data = response.data.unwrap();
+        // id=1 -> prev=NULL, next=20
+        assert_eq!(data[0][1], None);
+        assert_eq!(data[0][2], Some("20".to_string()));
+        // id=2 -> prev=10, next=30
+        assert_eq!(data[1][1], Some("10".to_string()));
+        assert_eq!(data[1][2], Some("30".to_string()));
+        // id=3 -> prev=20, next=NULL
+        assert_eq!(data[2][1], Some("20".to_string()));
+        assert_eq!(data[2][2], None);
+    }
+
+    #[tokio::test]
+    async fn test_window_sum_avg() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE test_wsum (category VARCHAR, value INT)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO test_wsum VALUES ('A', 10), ('A', 20), ('B', 30)")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT category, value, SUM(value) OVER (PARTITION BY category) as cat_sum FROM test_wsum ORDER BY category, value",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 3);
+        let data = response.data.unwrap();
+        // Category A sum = 30
+        assert_eq!(data[0][2], Some("30".to_string()));
+        assert_eq!(data[1][2], Some("30".to_string()));
+        // Category B sum = 30
+        assert_eq!(data[2][2], Some("30".to_string()));
+    }
 }
