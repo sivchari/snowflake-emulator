@@ -25,8 +25,63 @@ use regex::Regex;
 pub fn rewrite(sql: &str) -> String {
     let mut result = sql.to_string();
 
+    // Rewrite function names for DataFusion compatibility
+    result = rewrite_function_names(&result);
+
     // Rewrite LATERAL FLATTEN
     result = rewrite_lateral_flatten(&result);
+
+    result
+}
+
+/// Rewrite Snowflake function names to DataFusion equivalents
+fn rewrite_function_names(sql: &str) -> String {
+    let mut result = sql.to_string();
+
+    // CURRENT_TIMESTAMP() -> now() (with parentheses first)
+    let current_timestamp_parens = Regex::new(r"(?i)\bCURRENT_TIMESTAMP\s*\(\s*\)").unwrap();
+    result = current_timestamp_parens
+        .replace_all(&result, "now()")
+        .to_string();
+
+    // CURRENT_TIMESTAMP -> now() (without parentheses)
+    // Replace remaining CURRENT_TIMESTAMP that weren't part of CURRENT_TIMESTAMP()
+    let current_timestamp_pattern = Regex::new(r"(?i)\bCURRENT_TIMESTAMP\b").unwrap();
+    result = current_timestamp_pattern
+        .replace_all(&result, "now()")
+        .to_string();
+
+    // TRUNCATE(x, y) -> trunc(x, y) - for numeric truncation
+    let truncate_pattern = Regex::new(r"(?i)\bTRUNCATE\s*\(").unwrap();
+    result = truncate_pattern.replace_all(&result, "trunc(").to_string();
+
+    // CEILING(x) -> ceil(x)
+    let ceiling_pattern = Regex::new(r"(?i)\bCEILING\s*\(").unwrap();
+    result = ceiling_pattern.replace_all(&result, "ceil(").to_string();
+
+    // POW(x, y) -> power(x, y)
+    let pow_pattern = Regex::new(r"(?i)\bPOW\s*\(").unwrap();
+    result = pow_pattern.replace_all(&result, "power(").to_string();
+
+    // LEN(x) -> length(x)
+    let len_pattern = Regex::new(r"(?i)\bLEN\s*\(").unwrap();
+    result = len_pattern.replace_all(&result, "length(").to_string();
+
+    // NVL(x, y) is already implemented as UDF, but IFNULL is an alias
+    let ifnull_pattern = Regex::new(r"(?i)\bIFNULL\s*\(").unwrap();
+    result = ifnull_pattern.replace_all(&result, "NVL(").to_string();
+
+    // ZEROIFNULL(x) -> COALESCE(x, 0)
+    let zeroifnull_pattern = Regex::new(r"(?i)\bZEROIFNULL\s*\(([^)]+)\)").unwrap();
+    result = zeroifnull_pattern
+        .replace_all(&result, "COALESCE($1, 0)")
+        .to_string();
+
+    // NULLIFZERO(x) -> NULLIF(x, 0)
+    let nullifzero_pattern = Regex::new(r"(?i)\bNULLIFZERO\s*\(([^)]+)\)").unwrap();
+    result = nullifzero_pattern
+        .replace_all(&result, "NULLIF($1, 0)")
+        .to_string();
 
     result
 }
@@ -203,5 +258,65 @@ mod tests {
         assert!(result.contains("FLATTEN_ARRAY(t.data, _flatten_idx_1.idx)"));
         assert!(result.contains("_flatten_idx_1.idx"));
         assert!(result.contains("t.data")); // f.this replaced with input_expr
+    }
+
+    #[test]
+    fn test_current_timestamp_rewrite() {
+        let sql = "SELECT CURRENT_TIMESTAMP";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT now()");
+
+        let sql_parens = "SELECT CURRENT_TIMESTAMP()";
+        let rewritten_parens = rewrite(sql_parens);
+        assert_eq!(rewritten_parens, "SELECT now()");
+    }
+
+    #[test]
+    fn test_truncate_rewrite() {
+        let sql = "SELECT TRUNCATE(3.14159, 2)";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT trunc(3.14159, 2)");
+    }
+
+    #[test]
+    fn test_ceiling_rewrite() {
+        let sql = "SELECT CEILING(3.14)";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT ceil(3.14)");
+    }
+
+    #[test]
+    fn test_pow_rewrite() {
+        let sql = "SELECT POW(2, 8)";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT power(2, 8)");
+    }
+
+    #[test]
+    fn test_len_rewrite() {
+        let sql = "SELECT LEN('hello')";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT length('hello')");
+    }
+
+    #[test]
+    fn test_ifnull_rewrite() {
+        let sql = "SELECT IFNULL(col, 0) FROM t";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT NVL(col, 0) FROM t");
+    }
+
+    #[test]
+    fn test_zeroifnull_rewrite() {
+        let sql = "SELECT ZEROIFNULL(col) FROM t";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT COALESCE(col, 0) FROM t");
+    }
+
+    #[test]
+    fn test_nullifzero_rewrite() {
+        let sql = "SELECT NULLIFZERO(col) FROM t";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT NULLIF(col, 0) FROM t");
     }
 }
