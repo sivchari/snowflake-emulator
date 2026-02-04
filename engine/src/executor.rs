@@ -115,8 +115,8 @@ impl Executor {
         let numbers_batch =
             RecordBatch::try_new(numbers_schema.clone(), vec![Arc::new(numbers_array)])
                 .expect("Failed to create numbers batch");
-        let numbers_table =
-            MemTable::try_new(numbers_schema, vec![vec![numbers_batch]]).expect("Failed to create numbers table");
+        let numbers_table = MemTable::try_new(numbers_schema, vec![vec![numbers_batch]])
+            .expect("Failed to create numbers table");
         ctx.register_table("_numbers", Arc::new(numbers_table))
             .expect("Failed to register _NUMBERS table");
 
