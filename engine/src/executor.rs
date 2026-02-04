@@ -56,6 +56,39 @@ impl Executor {
         ctx.register_udf(functions::get_path());
         ctx.register_udf(functions::object_keys());
 
+        // Array functions
+        ctx.register_udf(functions::array_construct());
+        ctx.register_udf(functions::array_construct_compact());
+        ctx.register_udf(functions::array_append());
+        ctx.register_udf(functions::array_prepend());
+        ctx.register_udf(functions::array_cat());
+        ctx.register_udf(functions::array_slice());
+        ctx.register_udf(functions::array_contains());
+        ctx.register_udf(functions::array_position());
+        ctx.register_udf(functions::array_distinct());
+        ctx.register_udf(functions::array_flatten());
+
+        // Object functions
+        ctx.register_udf(functions::object_construct());
+        ctx.register_udf(functions::object_construct_keep_null());
+        ctx.register_udf(functions::object_insert());
+        ctx.register_udf(functions::object_delete());
+        ctx.register_udf(functions::object_pick());
+
+        // Type checking functions
+        ctx.register_udf(functions::is_array());
+        ctx.register_udf(functions::is_object());
+        ctx.register_udf(functions::is_null_value());
+        ctx.register_udf(functions::is_boolean());
+        ctx.register_udf(functions::is_integer());
+        ctx.register_udf(functions::is_decimal());
+        ctx.register_udf(functions::typeof_func());
+
+        // Conversion functions
+        ctx.register_udf(functions::to_variant());
+        ctx.register_udf(functions::to_array());
+        ctx.register_udf(functions::to_object());
+
         Self { ctx, catalog }
     }
 
