@@ -869,3 +869,216 @@ func TestToObject(t *testing.T) {
 		t.Errorf("Expected NULL for non-object, got %s", result.String)
 	}
 }
+
+// String Functions Tests
+
+func TestSplit(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT SPLIT('a,b,c', ',')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != `["a","b","c"]` {
+		t.Errorf("Expected [\"a\",\"b\",\"c\"], got %s", result)
+	}
+}
+
+func TestStrtok(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected string
+	}{
+		{"first token", "SELECT STRTOK('a.b.c', '.', 1)", "a"},
+		{"second token", "SELECT STRTOK('a.b.c', '.', 2)", "b"},
+		{"third token", "SELECT STRTOK('a.b.c', '.', 3)", "c"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result string
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestStrtokToArray(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT STRTOK_TO_ARRAY('a.b.c', '.')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != `["a","b","c"]` {
+		t.Errorf("Expected [\"a\",\"b\",\"c\"], got %s", result)
+	}
+}
+
+func TestRegexpLike(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected bool
+	}{
+		{"match", "SELECT REGEXP_LIKE('abc123', '[0-9]+')", true},
+		{"no match", "SELECT REGEXP_LIKE('abc', '[0-9]+')", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result bool
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestRegexpSubstr(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT REGEXP_SUBSTR('abc123def', '[0-9]+')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "123" {
+		t.Errorf("Expected 123, got %s", result)
+	}
+}
+
+func TestRegexpReplace(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT REGEXP_REPLACE('abc123def', '[0-9]+', 'XXX')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "abcXXXdef" {
+		t.Errorf("Expected abcXXXdef, got %s", result)
+	}
+}
+
+func TestRegexpCount(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result int64
+	err := db.QueryRow("SELECT REGEXP_COUNT('abab', 'ab')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != 2 {
+		t.Errorf("Expected 2, got %d", result)
+	}
+}
+
+func TestContains(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected bool
+	}{
+		{"contains", "SELECT CONTAINS('hello world', 'world')", true},
+		{"not contains", "SELECT CONTAINS('hello world', 'foo')", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result bool
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestStartswith(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected bool
+	}{
+		{"startswith", "SELECT STARTSWITH('hello world', 'hello')", true},
+		{"not startswith", "SELECT STARTSWITH('hello world', 'world')", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result bool
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestEndswith(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected bool
+	}{
+		{"endswith", "SELECT ENDSWITH('hello world', 'world')", true},
+		{"not endswith", "SELECT ENDSWITH('hello world', 'hello')", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result bool
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
