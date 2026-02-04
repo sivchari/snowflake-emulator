@@ -113,6 +113,10 @@ impl Executor {
         ctx.register_udaf(functions::object_agg());
         ctx.register_udaf(functions::listagg());
 
+        // Numeric functions
+        ctx.register_udf(functions::div0());
+        ctx.register_udf(functions::div0null());
+
         // Register _NUMBERS table for FLATTEN support (0-999)
         let numbers_schema = Arc::new(Schema::new(vec![Field::new("idx", DataType::Int64, false)]));
         let numbers: Vec<i64> = (0..1000).collect();

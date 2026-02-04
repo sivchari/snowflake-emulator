@@ -84,6 +84,7 @@ mod datetime;
 mod flatten;
 mod helpers;
 mod json;
+mod numeric;
 mod object;
 mod string;
 mod try_functions;
@@ -129,3 +130,6 @@ pub use string::{
 
 // Aggregate functions
 pub use aggregate::{array_agg, listagg, object_agg};
+
+// Numeric functions
+pub use numeric::{div0, div0null};
