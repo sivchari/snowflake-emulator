@@ -59,6 +59,18 @@
 //! - `TO_VARIANT(value)` - Convert to VARIANT
 //! - `TO_ARRAY(variant)` - Convert to ARRAY
 //! - `TO_OBJECT(variant)` - Convert to OBJECT
+//!
+//! ### String Functions
+//! - `SPLIT(string, delimiter)` - Split string into array
+//! - `STRTOK(string, delimiters, part)` - Extract token at position
+//! - `STRTOK_TO_ARRAY(string, delimiters)` - Split into array of tokens
+//! - `REGEXP_LIKE(string, pattern)` - Check if string matches pattern
+//! - `REGEXP_SUBSTR(string, pattern)` - Extract substring matching pattern
+//! - `REGEXP_REPLACE(string, pattern, replacement)` - Replace matches
+//! - `REGEXP_COUNT(string, pattern)` - Count pattern matches
+//! - `CONTAINS(string, substring)` - Check if string contains substring
+//! - `STARTSWITH(string, prefix)` - Check if string starts with prefix
+//! - `ENDSWITH(string, suffix)` - Check if string ends with suffix
 
 mod array;
 mod conditional;
@@ -67,6 +79,7 @@ mod flatten;
 mod helpers;
 mod json;
 mod object;
+mod string;
 mod try_functions;
 mod type_check;
 
@@ -100,4 +113,10 @@ pub use object::{
 pub use type_check::{
     is_array, is_boolean, is_decimal, is_integer, is_null_value, is_object, to_array, to_object,
     to_variant, typeof_func,
+};
+
+// String functions
+pub use string::{
+    contains, endswith, regexp_count, regexp_like, regexp_replace, regexp_substr, split,
+    startswith, strtok, strtok_to_array,
 };

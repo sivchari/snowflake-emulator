@@ -89,6 +89,18 @@ impl Executor {
         ctx.register_udf(functions::to_array());
         ctx.register_udf(functions::to_object());
 
+        // String functions
+        ctx.register_udf(functions::split());
+        ctx.register_udf(functions::strtok());
+        ctx.register_udf(functions::strtok_to_array());
+        ctx.register_udf(functions::regexp_like());
+        ctx.register_udf(functions::regexp_substr());
+        ctx.register_udf(functions::regexp_replace());
+        ctx.register_udf(functions::regexp_count());
+        ctx.register_udf(functions::contains());
+        ctx.register_udf(functions::startswith());
+        ctx.register_udf(functions::endswith());
+
         Self { ctx, catalog }
     }
 
