@@ -80,6 +80,7 @@
 mod aggregate;
 mod array;
 mod conditional;
+mod context;
 mod datetime;
 mod flatten;
 mod hash;
@@ -137,3 +138,8 @@ pub use numeric::{div0, div0null};
 
 // Hash functions
 pub use hash::{sha1_hex, sha2};
+
+// Context functions
+pub use context::{
+    current_database, current_role, current_schema, current_user, current_warehouse,
+};

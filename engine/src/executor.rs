@@ -121,6 +121,13 @@ impl Executor {
         ctx.register_udf(functions::sha1_hex());
         ctx.register_udf(functions::sha2());
 
+        // Context functions
+        ctx.register_udf(functions::current_user());
+        ctx.register_udf(functions::current_role());
+        ctx.register_udf(functions::current_database());
+        ctx.register_udf(functions::current_schema());
+        ctx.register_udf(functions::current_warehouse());
+
         // Register _NUMBERS table for FLATTEN support (0-999)
         let numbers_schema = Arc::new(Schema::new(vec![Field::new("idx", DataType::Int64, false)]));
         let numbers: Vec<i64> = (0..1000).collect();
