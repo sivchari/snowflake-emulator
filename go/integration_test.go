@@ -1450,3 +1450,337 @@ func TestWindowLagLead(t *testing.T) {
 		i++
 	}
 }
+
+// =============================================================================
+// Phase 4: Extended Functions Tests
+// =============================================================================
+
+// Date/Time Functions Tests (Extended)
+
+func TestToDate(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected string
+	}{
+		{"ISO format", "SELECT TO_DATE('2024-03-15')", "2024-03-15"},
+		{"US format", "SELECT TO_DATE('03/15/2024')", "2024-03-15"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result string
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestLastDay(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected string
+	}{
+		{"January", "SELECT LAST_DAY('2024-01-15')", "2024-01-31"},
+		{"February leap year", "SELECT LAST_DAY('2024-02-15')", "2024-02-29"},
+		{"April", "SELECT LAST_DAY('2024-04-10')", "2024-04-30"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result string
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestDayname(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected string
+	}{
+		{"Monday", "SELECT DAYNAME('2024-01-15')", "Mon"},
+		{"Sunday", "SELECT DAYNAME('2024-01-14')", "Sun"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result string
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestMonthname(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected string
+	}{
+		{"January", "SELECT MONTHNAME('2024-01-15')", "Jan"},
+		{"December", "SELECT MONTHNAME('2024-12-25')", "Dec"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result string
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+// Numeric Functions Tests
+
+func TestDiv0(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected float64
+	}{
+		{"normal division", "SELECT DIV0(10, 2)", 5.0},
+		{"division by zero", "SELECT DIV0(10, 0)", 0.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result float64
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %f, got %f", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestDiv0Null(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Normal division
+	var result sql.NullFloat64
+	err := db.QueryRow("SELECT DIV0NULL(10, 2)").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	if !result.Valid || result.Float64 != 5.0 {
+		t.Errorf("Expected 5.0, got %v", result)
+	}
+
+	// Division by zero returns NULL
+	err = db.QueryRow("SELECT DIV0NULL(10, 0)").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	if result.Valid {
+		t.Errorf("Expected NULL for division by zero, got %f", result.Float64)
+	}
+}
+
+// Hash Functions Tests
+
+func TestSHA1(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT SHA1('hello')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// SHA1 of "hello" is aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
+	expected := "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"
+	if result != expected {
+		t.Errorf("Expected %s, got %s", expected, result)
+	}
+}
+
+func TestSHA2(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected string
+	}{
+		{
+			"SHA256",
+			"SELECT SHA2('hello', 256)",
+			"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+		},
+		{
+			"SHA512",
+			"SELECT SHA2('hello', 512)",
+			"9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result string
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+// Context Functions Tests
+
+func TestCurrentUser(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT CURRENT_USER()").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "EMULATOR_USER" {
+		t.Errorf("Expected EMULATOR_USER, got %s", result)
+	}
+}
+
+func TestCurrentRole(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT CURRENT_ROLE()").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "ACCOUNTADMIN" {
+		t.Errorf("Expected ACCOUNTADMIN, got %s", result)
+	}
+}
+
+func TestCurrentDatabase(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT CURRENT_DATABASE()").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "EMULATOR_DB" {
+		t.Errorf("Expected EMULATOR_DB, got %s", result)
+	}
+}
+
+func TestCurrentSchema(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT CURRENT_SCHEMA()").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "PUBLIC" {
+		t.Errorf("Expected PUBLIC, got %s", result)
+	}
+}
+
+func TestCurrentWarehouse(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT CURRENT_WAREHOUSE()").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "EMULATOR_WH" {
+		t.Errorf("Expected EMULATOR_WH, got %s", result)
+	}
+}
+
+// SQL Rewriter Function Mapping Tests
+
+func TestCurrentTimestampRewrite(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// CURRENT_TIMESTAMP should be rewritten to now()
+	var result string
+	err := db.QueryRow("SELECT CURRENT_TIMESTAMP").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// Result should be a valid timestamp string
+	if result == "" {
+		t.Error("Expected non-empty timestamp")
+	}
+}
+
+func TestLenRewrite(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// LEN should be rewritten to length
+	var result int
+	err := db.QueryRow("SELECT LEN('hello')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != 5 {
+		t.Errorf("Expected 5, got %d", result)
+	}
+}
