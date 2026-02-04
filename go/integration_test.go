@@ -1082,3 +1082,98 @@ func TestEndswith(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// Aggregate Function Tests
+// =============================================================================
+
+func TestArrayAgg(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create test table
+	_, err := db.Exec("CREATE TABLE test_agg_arr (val INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_agg_arr")
+
+	// Insert test data
+	_, err = db.Exec("INSERT INTO test_agg_arr VALUES (1), (2), (3)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Test ARRAY_AGG
+	var result string
+	err = db.QueryRow("SELECT ARRAY_AGG(val) FROM test_agg_arr").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// Result should be JSON array
+	if result != "[1,2,3]" {
+		t.Errorf("Expected [1,2,3], got %s", result)
+	}
+}
+
+func TestObjectAgg(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create test table
+	_, err := db.Exec("CREATE TABLE test_agg_obj (k VARCHAR, v INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_agg_obj")
+
+	// Insert test data
+	_, err = db.Exec("INSERT INTO test_agg_obj VALUES ('a', 1), ('b', 2)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Test OBJECT_AGG
+	var result string
+	err = db.QueryRow("SELECT OBJECT_AGG(k, v) FROM test_agg_obj").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// Result should be JSON object (key order may vary)
+	if result != `{"a":1,"b":2}` && result != `{"b":2,"a":1}` {
+		t.Errorf("Expected JSON object with a:1 and b:2, got %s", result)
+	}
+}
+
+func TestListagg(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create test table
+	_, err := db.Exec("CREATE TABLE test_listagg (name VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_listagg")
+
+	// Insert test data
+	_, err = db.Exec("INSERT INTO test_listagg VALUES ('Alice'), ('Bob'), ('Charlie')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Test LISTAGG with default delimiter
+	var result string
+	err = db.QueryRow("SELECT LISTAGG(name) FROM test_listagg").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// Default delimiter is comma
+	expected := "Alice,Bob,Charlie"
+	if result != expected {
+		t.Errorf("Expected %s, got %s", expected, result)
+	}
+}

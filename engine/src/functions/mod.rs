@@ -71,7 +71,13 @@
 //! - `CONTAINS(string, substring)` - Check if string contains substring
 //! - `STARTSWITH(string, prefix)` - Check if string starts with prefix
 //! - `ENDSWITH(string, suffix)` - Check if string ends with suffix
+//!
+//! ### Aggregate Functions
+//! - `ARRAY_AGG(value)` - Collect values into JSON array
+//! - `OBJECT_AGG(key, value)` - Collect key-value pairs into JSON object
+//! - `LISTAGG(value, delimiter)` - Concatenate values with delimiter
 
+mod aggregate;
 mod array;
 mod conditional;
 mod datetime;
@@ -120,3 +126,6 @@ pub use string::{
     contains, endswith, regexp_count, regexp_like, regexp_replace, regexp_substr, split,
     startswith, strtok, strtok_to_array,
 };
+
+// Aggregate functions
+pub use aggregate::{array_agg, listagg, object_agg};

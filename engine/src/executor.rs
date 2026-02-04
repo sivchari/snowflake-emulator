@@ -101,6 +101,11 @@ impl Executor {
         ctx.register_udf(functions::startswith());
         ctx.register_udf(functions::endswith());
 
+        // Aggregate functions
+        ctx.register_udaf(functions::array_agg());
+        ctx.register_udaf(functions::object_agg());
+        ctx.register_udaf(functions::listagg());
+
         Self { ctx, catalog }
     }
 
