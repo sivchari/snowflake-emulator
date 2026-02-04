@@ -521,3 +521,351 @@ func TestObjectKeys(t *testing.T) {
 		t.Error("Expected non-empty result")
 	}
 }
+
+// =============================================================================
+// Phase 3.1: VARIANT/ARRAY/OBJECT Type Support Tests
+// =============================================================================
+
+// Type Checking Functions Tests
+
+func TestIsArray(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"array", `'[1, 2, 3]'`, true},
+		{"object", `'{"a": 1}'`, false},
+		{"string", `'"hello"'`, false},
+		{"number", `'42'`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result bool
+			err := db.QueryRow("SELECT IS_ARRAY(" + tt.input + ")").Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestIsObject(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"object", `'{"a": 1}'`, true},
+		{"array", `'[1, 2, 3]'`, false},
+		{"string", `'"hello"'`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result bool
+			err := db.QueryRow("SELECT IS_OBJECT(" + tt.input + ")").Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestTypeof(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"array", `'[1, 2, 3]'`, "ARRAY"},
+		{"object", `'{"a": 1}'`, "OBJECT"},
+		{"integer", `'42'`, "INTEGER"},
+		{"boolean", `'true'`, "BOOLEAN"},
+		{"null", `'null'`, "NULL_VALUE"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result string
+			err := db.QueryRow("SELECT TYPEOF(" + tt.input + ")").Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+// Array Functions Tests
+
+func TestArrayConstruct(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT ARRAY_CONSTRUCT(1, 2, 3)").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "[1,2,3]" {
+		t.Errorf("Expected [1,2,3], got %s", result)
+	}
+}
+
+func TestArrayConstructCompact(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT ARRAY_CONSTRUCT_COMPACT(1, NULL, 3)").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "[1,3]" {
+		t.Errorf("Expected [1,3], got %s", result)
+	}
+}
+
+func TestArrayAppend(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT ARRAY_APPEND('[1, 2]', 3)").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "[1,2,3]" {
+		t.Errorf("Expected [1,2,3], got %s", result)
+	}
+}
+
+func TestArrayCat(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT ARRAY_CAT('[1, 2]', '[3, 4]')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "[1,2,3,4]" {
+		t.Errorf("Expected [1,2,3,4], got %s", result)
+	}
+}
+
+func TestArrayContains(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		element  string
+		array    string
+		expected bool
+	}{
+		{"found", "2", "'[1, 2, 3]'", true},
+		{"not found", "5", "'[1, 2, 3]'", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result bool
+			query := "SELECT ARRAY_CONTAINS(" + tt.element + ", " + tt.array + ")"
+			err := db.QueryRow(query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestArrayDistinct(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT ARRAY_DISTINCT('[1, 2, 2, 3, 1]')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "[1,2,3]" {
+		t.Errorf("Expected [1,2,3], got %s", result)
+	}
+}
+
+func TestArrayFlatten(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT ARRAY_FLATTEN('[[1, 2], [3, 4]]')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "[1,2,3,4]" {
+		t.Errorf("Expected [1,2,3,4], got %s", result)
+	}
+}
+
+// Object Functions Tests
+
+func TestObjectConstruct(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT OBJECT_CONSTRUCT('a', 1, 'b', 2)").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// The result could be {"a":1,"b":2} or {"b":2,"a":1}
+	if result != `{"a":1,"b":2}` && result != `{"b":2,"a":1}` {
+		t.Errorf("Expected {\"a\":1,\"b\":2}, got %s", result)
+	}
+}
+
+func TestObjectInsert(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow(`SELECT OBJECT_INSERT('{"a": 1}', 'b', 2)`).Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// Result should contain both keys
+	if result != `{"a":1,"b":2}` && result != `{"b":2,"a":1}` {
+		t.Errorf("Expected object with a=1 and b=2, got %s", result)
+	}
+}
+
+func TestObjectDelete(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow(`SELECT OBJECT_DELETE('{"a": 1, "b": 2}', 'a')`).Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != `{"b":2}` {
+		t.Errorf("Expected {\"b\":2}, got %s", result)
+	}
+}
+
+func TestObjectPick(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow(`SELECT OBJECT_PICK('{"a": 1, "b": 2, "c": 3}', 'a', 'c')`).Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// Result should contain only a and c
+	if result != `{"a":1,"c":3}` && result != `{"c":3,"a":1}` {
+		t.Errorf("Expected object with a=1 and c=3, got %s", result)
+	}
+}
+
+// Conversion Functions Tests
+
+func TestToVariant(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT TO_VARIANT(42)").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "42" {
+		t.Errorf("Expected 42, got %s", result)
+	}
+}
+
+func TestToArray(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"already array", "'[1, 2, 3]'", "[1,2,3]"},
+		{"non-array", "'42'", "[42]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result string
+			err := db.QueryRow("SELECT TO_ARRAY(" + tt.input + ")").Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestToObject(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result sql.NullString
+	err := db.QueryRow(`SELECT TO_OBJECT('{"a": 1}')`).Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if !result.Valid || result.String != `{"a":1}` {
+		t.Errorf("Expected {\"a\":1}, got %v", result)
+	}
+
+	// Non-object should return NULL
+	err = db.QueryRow("SELECT TO_OBJECT('[1, 2, 3]')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result.Valid {
+		t.Errorf("Expected NULL for non-object, got %s", result.String)
+	}
+}
