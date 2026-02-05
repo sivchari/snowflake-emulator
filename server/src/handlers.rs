@@ -55,7 +55,7 @@ pub async fn get_statement_status(
     // Currently only synchronous execution is supported, so return handle not found error
     let error_response = ErrorResponse {
         code: "002014".to_string(),
-        message: format!("Statement handle not found: {}", statement_handle),
+        message: format!("Statement handle not found: {statement_handle}"),
         sql_state: "42000".to_string(),
         statement_handle: Some(statement_handle),
     };

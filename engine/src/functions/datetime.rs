@@ -2,6 +2,9 @@
 //!
 //! Snowflake-compatible date and time manipulation functions.
 
+// Allow deprecated chrono functions until migrated to new API
+#![allow(deprecated)]
+
 use std::any::Any;
 use std::sync::Arc;
 
@@ -62,7 +65,7 @@ impl ScalarUDFImpl for DateAddFunc {
         Ok(arg_types.get(2).cloned().unwrap_or(DataType::Date32))
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
+    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
         if args.len() != 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "DATEADD requires exactly 3 arguments".to_string(),
@@ -165,8 +168,7 @@ fn dateadd_scalar(part: &str, value: i64, scalar: &ScalarValue) -> Result<Scalar
                 )))
             } else {
                 Err(datafusion::error::DataFusionError::Execution(format!(
-                    "Cannot parse '{}' as date or datetime",
-                    s
+                    "Cannot parse '{s}' as date or datetime"
                 )))
             }
         }
@@ -251,8 +253,7 @@ fn add_to_date(date: &NaiveDate, part: &str, value: i64) -> Result<NaiveDate> {
             })
         }
         _ => Err(datafusion::error::DataFusionError::Execution(format!(
-            "Unknown date part: {}",
-            part
+            "Unknown date part: {part}"
         ))),
     }
 }
@@ -300,8 +301,7 @@ fn add_to_datetime(datetime: &NaiveDateTime, part: &str, value: i64) -> Result<N
                 .unwrap())
         }
         _ => Err(datafusion::error::DataFusionError::Execution(format!(
-            "Unknown date part: {}",
-            part
+            "Unknown date part: {part}"
         ))),
     }
 }
@@ -437,8 +437,7 @@ fn scalar_to_datetime(scalar: &ScalarValue) -> Result<Option<NaiveDateTime>> {
                 Ok(Some(datetime))
             } else {
                 Err(datafusion::error::DataFusionError::Execution(format!(
-                    "Cannot parse '{}' as date or datetime",
-                    s
+                    "Cannot parse '{s}' as date or datetime"
                 )))
             }
         }
@@ -476,8 +475,7 @@ fn calculate_diff(part: &str, dt1: &NaiveDateTime, dt2: &NaiveDateTime) -> Resul
             Ok((months2 - months1) / 3)
         }
         _ => Err(datafusion::error::DataFusionError::Execution(format!(
-            "Unknown date part: {}",
-            part
+            "Unknown date part: {part}"
         ))),
     }
 }
@@ -534,8 +532,7 @@ fn array_value_to_datetime(array: &Arc<dyn Array>, idx: usize) -> Result<Option<
                 Ok(Some(datetime))
             } else {
                 Err(datafusion::error::DataFusionError::Execution(format!(
-                    "Cannot parse '{}' as date or datetime",
-                    s
+                    "Cannot parse '{s}' as date or datetime"
                 )))
             }
         }
@@ -646,8 +643,7 @@ fn to_date_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
             }
 
             Err(datafusion::error::DataFusionError::Execution(format!(
-                "Cannot parse '{}' as date",
-                s
+                "Cannot parse '{s}' as date"
             )))
         }
         ScalarValue::Date32(_) => Ok(scalar.clone()),
@@ -655,9 +651,7 @@ fn to_date_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
             let days = (*ms / 86400000) as i32;
             Ok(ScalarValue::Date32(Some(days)))
         }
-        ScalarValue::Utf8(None) | ScalarValue::Date32(None) | ScalarValue::Date64(None) => {
-            Ok(ScalarValue::Date32(None))
-        }
+        ScalarValue::Utf8(None) | ScalarValue::Date64(None) => Ok(ScalarValue::Date32(None)),
         _ => Err(datafusion::error::DataFusionError::Execution(
             "TO_DATE argument must be a string or date".to_string(),
         )),
@@ -814,8 +808,7 @@ fn to_timestamp_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
             }
 
             Err(datafusion::error::DataFusionError::Execution(format!(
-                "Cannot parse '{}' as timestamp",
-                s
+                "Cannot parse '{s}' as timestamp"
             )))
         }
         ScalarValue::Int64(Some(epoch)) => {
@@ -970,10 +963,7 @@ fn last_day_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
         }
         ScalarValue::Utf8(Some(s)) => {
             let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "Cannot parse '{}' as date",
-                    s
-                ))
+                datafusion::error::DataFusionError::Execution(format!("Cannot parse '{s}' as date"))
             })?;
             let last_day = get_last_day_of_month(date.year(), date.month());
             let new_days = last_day.num_days_from_ce() - 719163;
@@ -1119,10 +1109,7 @@ fn dayname_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
         }
         ScalarValue::Utf8(Some(s)) => {
             let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "Cannot parse '{}' as date",
-                    s
-                ))
+                datafusion::error::DataFusionError::Execution(format!("Cannot parse '{s}' as date"))
             })?;
             Ok(ScalarValue::Utf8(Some(get_day_name(&date).to_string())))
         }
@@ -1272,10 +1259,7 @@ fn monthname_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
         }
         ScalarValue::Utf8(Some(s)) => {
             let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "Cannot parse '{}' as date",
-                    s
-                ))
+                datafusion::error::DataFusionError::Execution(format!("Cannot parse '{s}' as date"))
             })?;
             Ok(ScalarValue::Utf8(Some(
                 get_month_name(date.month()).to_string(),

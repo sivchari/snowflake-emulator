@@ -141,7 +141,7 @@ impl ScalarUDFImpl for NvlFunc {
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        Ok(arg_types.get(0).cloned().unwrap_or(DataType::Null))
+        Ok(arg_types.first().cloned().unwrap_or(DataType::Null))
     }
 
     fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
@@ -452,15 +452,13 @@ impl ScalarUDFImpl for DecodeFunc {
             }
 
             // If no match, use default or NULL
-            if !matched {
-                if has_default {
-                    let default_idx = args.len() - 1;
-                    let default_array = args[default_idx].to_array(num_rows)?;
-                    result_value = Some(datafusion::common::ScalarValue::try_from_array(
-                        &default_array,
-                        row_idx,
-                    )?);
-                }
+            if !matched && has_default {
+                let default_idx = args.len() - 1;
+                let default_array = args[default_idx].to_array(num_rows)?;
+                result_value = Some(datafusion::common::ScalarValue::try_from_array(
+                    &default_array,
+                    row_idx,
+                )?);
             }
 
             // Append to result builder

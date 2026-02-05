@@ -42,7 +42,7 @@ pub fn build_router() -> Router {
 /// Start server
 pub async fn run(host: &str, port: u16) -> std::io::Result<()> {
     let app = build_router();
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
 
     tracing::info!("Snowflake Emulator listening on {}", addr);
 

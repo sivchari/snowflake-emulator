@@ -369,12 +369,12 @@ fn scalar_to_variant(scalar: &ScalarValue) -> Result<Option<String>> {
         }
         _ => {
             // For other types, convert to string
-            serde_json::Value::String(format!("{}", scalar))
+            serde_json::Value::String(format!("{scalar}"))
         }
     };
 
     let json_str = serde_json::to_string(&json_value).map_err(|e| {
-        datafusion::error::DataFusionError::Execution(format!("JSON serialization error: {}", e))
+        datafusion::error::DataFusionError::Execution(format!("JSON serialization error: {e}"))
     })?;
 
     Ok(Some(json_str))
@@ -493,10 +493,8 @@ impl ScalarUDFImpl for ToArrayFunc {
                         "TO_ARRAY argument must be a string".to_string(),
                     )
                 })?;
-                let result: StringArray = str_arr
-                    .iter()
-                    .map(|opt| opt.map(|s| value_to_array(s)))
-                    .collect();
+                let result: StringArray =
+                    str_arr.iter().map(|opt| opt.map(value_to_array)).collect();
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
             _ => {
@@ -504,7 +502,7 @@ impl ScalarUDFImpl for ToArrayFunc {
                 let scalar = &args[0];
                 if let ColumnarValue::Scalar(s) = scalar {
                     let json_str = scalar_to_variant(s)?;
-                    let result = json_str.map(|s| format!("[{}]", s));
+                    let result = json_str.map(|s| format!("[{s}]"));
                     Ok(ColumnarValue::Scalar(ScalarValue::Utf8(result)))
                 } else {
                     Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(

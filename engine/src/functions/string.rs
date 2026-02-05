@@ -1009,7 +1009,7 @@ impl ScalarUDFImpl for LpadFunc {
                 } else {
                     let pad_len = target_len - current_len;
                     let pad_chars: String = pad_string.chars().cycle().take(pad_len).collect();
-                    Some(format!("{}{}", pad_chars, s))
+                    Some(format!("{pad_chars}{s}"))
                 }
             }
             None => None,
@@ -1093,7 +1093,7 @@ impl ScalarUDFImpl for RpadFunc {
                 } else {
                     let pad_len = target_len - current_len;
                     let pad_chars: String = pad_string.chars().cycle().take(pad_len).collect();
-                    Some(format!("{}{}", s, pad_chars))
+                    Some(format!("{s}{pad_chars}"))
                 }
             }
             None => None,
