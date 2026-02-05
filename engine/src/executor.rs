@@ -107,6 +107,11 @@ impl Executor {
         ctx.register_udf(functions::contains());
         ctx.register_udf(functions::startswith());
         ctx.register_udf(functions::endswith());
+        ctx.register_udf(functions::charindex());
+        ctx.register_udf(functions::reverse());
+        ctx.register_udf(functions::lpad());
+        ctx.register_udf(functions::rpad());
+        ctx.register_udf(functions::translate());
 
         // Aggregate functions
         ctx.register_udaf(functions::array_agg());

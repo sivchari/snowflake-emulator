@@ -83,6 +83,13 @@ fn rewrite_function_names(sql: &str) -> String {
         .replace_all(&result, "NULLIF($1, 0)")
         .to_string();
 
+    // POSITION(substr IN str) -> charindex(substr, str)
+    let position_pattern =
+        Regex::new(r"(?i)\bPOSITION\s*\(\s*([^)]+?)\s+IN\s+([^)]+?)\s*\)").unwrap();
+    result = position_pattern
+        .replace_all(&result, "charindex($1, $2)")
+        .to_string();
+
     result
 }
 
@@ -318,5 +325,12 @@ mod tests {
         let sql = "SELECT NULLIFZERO(col) FROM t";
         let rewritten = rewrite(sql);
         assert_eq!(rewritten, "SELECT NULLIF(col, 0) FROM t");
+    }
+
+    #[test]
+    fn test_position_rewrite() {
+        let sql = "SELECT POSITION('bar' IN 'foobar') FROM t";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT charindex('bar', 'foobar') FROM t");
     }
 }
