@@ -61,6 +61,7 @@ impl Executor {
         ctx.register_udf(functions::flatten_array());
         ctx.register_udf(functions::array_size());
         ctx.register_udf(functions::get_path());
+        ctx.register_udf(functions::get());
         ctx.register_udf(functions::object_keys());
 
         // Array functions

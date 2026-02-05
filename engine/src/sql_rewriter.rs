@@ -93,6 +93,18 @@ fn rewrite_function_names(sql: &str) -> String {
         .replace_all(&result, "charindex($1, $2)")
         .to_string();
 
+    // Bracket notation: col['key'] or col[0] -> get(col, 'key') or get(col, 0)
+    // Match identifier followed by ['string'] or [number]
+    let bracket_string_pattern = Regex::new(r"(\w+)\['([^']+)'\]").unwrap();
+    result = bracket_string_pattern
+        .replace_all(&result, "get($1, '$2')")
+        .to_string();
+
+    let bracket_number_pattern = Regex::new(r"(\w+)\[(\d+)\]").unwrap();
+    result = bracket_number_pattern
+        .replace_all(&result, "get($1, $2)")
+        .to_string();
+
     result
 }
 
@@ -406,5 +418,19 @@ mod tests {
         let rewritten = rewrite(sql);
         // Should not be modified (other than function rewrites which don't apply here)
         assert_eq!(rewritten, "SELECT id, name FROM t WHERE id > 1");
+    }
+
+    #[test]
+    fn test_bracket_string_key() {
+        let sql = "SELECT data['name'] FROM t";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT get(data, 'name') FROM t");
+    }
+
+    #[test]
+    fn test_bracket_number_index() {
+        let sql = "SELECT arr[0] FROM t";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT get(arr, 0) FROM t");
     }
 }

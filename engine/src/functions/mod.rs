@@ -111,7 +111,7 @@ pub use array::{
 };
 
 // Array/Object functions (FLATTEN helpers)
-pub use flatten::{array_size, flatten_array, get_path, object_keys};
+pub use flatten::{array_size, flatten_array, get, get_path, object_keys};
 
 // Object functions
 pub use object::{

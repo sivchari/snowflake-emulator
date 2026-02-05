@@ -484,6 +484,130 @@ pub fn get_path() -> ScalarUDF {
 }
 
 // ============================================================================
+// GET function - Array/Object element access
+// ============================================================================
+
+/// GET function - Extract element from JSON array or object by index or key
+///
+/// Syntax: GET(variant_expr, index_or_key)
+///
+/// For arrays: GET('[1, 2, 3]', 0) returns '1'
+/// For objects: GET('{"a": 1}', 'a') returns '1'
+#[derive(Debug)]
+pub struct GetFunc {
+    signature: Signature,
+}
+
+impl Default for GetFunc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GetFunc {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::new(TypeSignature::Any(2), Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for GetFunc {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "get"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+        if args.len() != 2 {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "GET requires exactly 2 arguments".to_string(),
+            ));
+        }
+
+        match (&args[0], &args[1]) {
+            (ColumnarValue::Scalar(json), ColumnarValue::Scalar(key)) => {
+                let json_str = match json {
+                    ScalarValue::Utf8(Some(s)) | ScalarValue::LargeUtf8(Some(s)) => s.clone(),
+                    ScalarValue::Null => {
+                        return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)));
+                    }
+                    _ => {
+                        return Err(datafusion::error::DataFusionError::Execution(
+                            "GET first argument must be a JSON string".to_string(),
+                        ));
+                    }
+                };
+
+                // The key can be an integer (array index) or string (object key)
+                let result = match key {
+                    ScalarValue::Int64(Some(idx)) => get_by_index(&json_str, *idx as usize),
+                    ScalarValue::Int32(Some(idx)) => get_by_index(&json_str, *idx as usize),
+                    ScalarValue::UInt64(Some(idx)) => get_by_index(&json_str, *idx as usize),
+                    ScalarValue::Utf8(Some(k)) | ScalarValue::LargeUtf8(Some(k)) => {
+                        // If key is numeric string, treat as index
+                        if let Ok(idx) = k.parse::<usize>() {
+                            get_by_index(&json_str, idx)
+                        } else {
+                            get_by_key(&json_str, k)
+                        }
+                    }
+                    ScalarValue::Null => None,
+                    _ => {
+                        return Err(datafusion::error::DataFusionError::Execution(
+                            "GET second argument must be an integer or string".to_string(),
+                        ));
+                    }
+                };
+
+                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(result)))
+            }
+            _ => Err(datafusion::error::DataFusionError::Execution(
+                "GET requires scalar arguments".to_string(),
+            )),
+        }
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        None
+    }
+}
+
+fn get_by_index(json_str: &str, index: usize) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let element = value.get(index)?;
+    match element {
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => Some(serde_json::to_string(element).unwrap_or_else(|_| "null".to_string())),
+    }
+}
+
+fn get_by_key(json_str: &str, key: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let element = value.get(key)?;
+    match element {
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => Some(serde_json::to_string(element).unwrap_or_else(|_| "null".to_string())),
+    }
+}
+
+/// Create GET scalar UDF
+pub fn get() -> ScalarUDF {
+    ScalarUDF::from(GetFunc::new())
+}
+
+// ============================================================================
 // OBJECT_KEYS function
 // ============================================================================
 
@@ -732,6 +856,56 @@ mod tests {
             assert!(keys.contains(&"age".to_string()));
             assert!(keys.contains(&"city".to_string()));
             assert_eq!(keys.len(), 3);
+        } else {
+            panic!("Expected scalar utf8");
+        }
+    }
+
+    #[test]
+    fn test_get_array_index() {
+        let func = GetFunc::new();
+
+        let arr = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"[10, 20, 30]"#.to_string())));
+        let idx = ColumnarValue::Scalar(ScalarValue::Int64(Some(1)));
+
+        let result = func.invoke_batch(&[arr, idx], 1).unwrap();
+
+        if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
+            assert_eq!(s, "20");
+        } else {
+            panic!("Expected scalar utf8");
+        }
+    }
+
+    #[test]
+    fn test_get_object_key() {
+        let func = GetFunc::new();
+
+        let obj = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"{"a": 1, "b": 2}"#.to_string())));
+        let key = ColumnarValue::Scalar(ScalarValue::Utf8(Some("b".to_string())));
+
+        let result = func.invoke_batch(&[obj, key], 1).unwrap();
+
+        if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
+            assert_eq!(s, "2");
+        } else {
+            panic!("Expected scalar utf8");
+        }
+    }
+
+    #[test]
+    fn test_get_array_string_index() {
+        let func = GetFunc::new();
+
+        let arr = ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+            r#"["first", "second", "third"]"#.to_string(),
+        )));
+        let idx = ColumnarValue::Scalar(ScalarValue::Utf8(Some("0".to_string())));
+
+        let result = func.invoke_batch(&[arr, idx], 1).unwrap();
+
+        if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
+            assert_eq!(s, "first");
         } else {
             panic!("Expected scalar utf8");
         }
