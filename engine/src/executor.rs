@@ -37,6 +37,7 @@ impl Executor {
         ctx.register_udf(functions::iff());
         ctx.register_udf(functions::nvl());
         ctx.register_udf(functions::nvl2());
+        ctx.register_udf(functions::decode());
 
         // JSON functions
         ctx.register_udf(functions::parse_json());
@@ -153,6 +154,17 @@ impl Executor {
     pub async fn execute(&self, sql: &str) -> Result<StatementResponse> {
         let statement_handle = Uuid::new_v4().to_string();
 
+        // Handle SHOW commands specially
+        let sql_upper = sql.trim().to_uppercase();
+        if sql_upper.starts_with("SHOW ") {
+            return self.handle_show_command(sql, statement_handle).await;
+        }
+
+        // Handle DESCRIBE/DESC commands specially
+        if sql_upper.starts_with("DESCRIBE ") || sql_upper.starts_with("DESC ") {
+            return self.handle_describe_command(sql, statement_handle).await;
+        }
+
         // Rewrite Snowflake-specific SQL constructs
         let rewritten_sql = sql_rewriter::rewrite(sql);
 
@@ -166,6 +178,208 @@ impl Executor {
         let response = self.batches_to_response(batches, statement_handle)?;
 
         Ok(response)
+    }
+
+    /// Handle SHOW commands (SHOW TABLES, SHOW SCHEMAS, SHOW DATABASES)
+    async fn handle_show_command(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let sql_upper = sql.trim().to_uppercase();
+
+        if sql_upper.starts_with("SHOW TABLES") {
+            self.handle_show_tables(statement_handle).await
+        } else if sql_upper.starts_with("SHOW SCHEMAS") {
+            self.handle_show_schemas(statement_handle).await
+        } else if sql_upper.starts_with("SHOW DATABASES") {
+            self.handle_show_databases(statement_handle).await
+        } else {
+            Err(crate::error::Error::ExecutionError(format!(
+                "Unsupported SHOW command: {}",
+                sql
+            )))
+        }
+    }
+
+    /// Handle SHOW TABLES command
+    async fn handle_show_tables(&self, statement_handle: String) -> Result<StatementResponse> {
+        // Get all table names from DataFusion catalog
+        let catalog = self.ctx.catalog("datafusion").unwrap();
+        let schema = catalog.schema("public").unwrap();
+        let table_names = schema.table_names();
+
+        // Build column metadata
+        let columns = vec![ColumnMetaData {
+            name: "TABLE_NAME".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        // Build data rows
+        let data: Vec<Vec<Option<String>>> = table_names
+            .iter()
+            .map(|name| vec![Some(name.clone())])
+            .collect();
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle SHOW SCHEMAS command
+    async fn handle_show_schemas(&self, statement_handle: String) -> Result<StatementResponse> {
+        // DataFusion uses a flat namespace, return "public" as default schema
+        let columns = vec![ColumnMetaData {
+            name: "SCHEMA_NAME".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let data: Vec<Vec<Option<String>>> = vec![
+            vec![Some("public".to_string())],
+            vec![Some("information_schema".to_string())],
+        ];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle SHOW DATABASES command
+    async fn handle_show_databases(&self, statement_handle: String) -> Result<StatementResponse> {
+        // Return default database name
+        let columns = vec![ColumnMetaData {
+            name: "DATABASE_NAME".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let data: Vec<Vec<Option<String>>> = vec![vec![Some("default".to_string())]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle DESCRIBE/DESC commands
+    async fn handle_describe_command(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let sql_upper = sql.trim().to_uppercase();
+
+        // Parse table name from: DESCRIBE TABLE name, DESCRIBE name, DESC TABLE name, DESC name
+        let table_name =
+            if sql_upper.starts_with("DESCRIBE TABLE ") || sql_upper.starts_with("DESC TABLE ") {
+                // DESCRIBE TABLE tablename or DESC TABLE tablename
+                sql.trim().split_whitespace().nth(2).map(|s| s.to_string())
+            } else {
+                // DESCRIBE tablename or DESC tablename
+                sql.trim().split_whitespace().nth(1).map(|s| s.to_string())
+            };
+
+        let table_name = table_name.ok_or_else(|| {
+            crate::error::Error::ExecutionError("DESCRIBE requires a table name".to_string())
+        })?;
+
+        self.handle_describe_table(&table_name, statement_handle)
+            .await
+    }
+
+    /// Handle DESCRIBE TABLE command
+    async fn handle_describe_table(
+        &self,
+        table_name: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        // Get table from DataFusion catalog
+        let catalog = self.ctx.catalog("datafusion").unwrap();
+        let schema = catalog.schema("public").unwrap();
+
+        let table = schema
+            .table(table_name)
+            .await
+            .map_err(|_| crate::error::Error::TableNotFound(table_name.to_string()))?;
+
+        let table =
+            table.ok_or_else(|| crate::error::Error::TableNotFound(table_name.to_string()))?;
+
+        let arrow_schema = table.schema();
+
+        // Build column metadata for result
+        let columns = vec![
+            ColumnMetaData {
+                name: "name".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "type".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "kind".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "null".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+        ];
+
+        // Build data rows - one row per column in the table
+        let data: Vec<Vec<Option<String>>> = arrow_schema
+            .fields()
+            .iter()
+            .map(|field| {
+                vec![
+                    Some(field.name().clone()),
+                    Some(self.arrow_type_to_snowflake_type(field.data_type())),
+                    Some("COLUMN".to_string()),
+                    Some(if field.is_nullable() { "Y" } else { "N" }.to_string()),
+                ]
+            })
+            .collect();
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Convert Arrow data type to Snowflake type string
+    fn arrow_type_to_snowflake_type(&self, data_type: &DataType) -> String {
+        match data_type {
+            DataType::Boolean => "BOOLEAN".to_string(),
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+                "NUMBER".to_string()
+            }
+            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
+                "NUMBER".to_string()
+            }
+            DataType::Float32 | DataType::Float64 => "FLOAT".to_string(),
+            DataType::Utf8 | DataType::LargeUtf8 => "VARCHAR".to_string(),
+            DataType::Date32 | DataType::Date64 => "DATE".to_string(),
+            DataType::Timestamp(_, _) => "TIMESTAMP".to_string(),
+            _ => format!("{:?}", data_type),
+        }
     }
 
     /// Convert RecordBatch to StatementResponse
@@ -346,6 +560,64 @@ impl Executor {
             DataType::LargeUtf8 => {
                 let arr = array.as_any().downcast_ref::<LargeStringArray>().unwrap();
                 arr.value(row_idx).to_string()
+            }
+            DataType::Date32 => {
+                let arr = array.as_any().downcast_ref::<Date32Array>().unwrap();
+                let days = arr.value(row_idx);
+                // Date32 is days since 1970-01-01
+                let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+                let date = epoch + chrono::Duration::days(days as i64);
+                date.format("%Y-%m-%d").to_string()
+            }
+            DataType::Date64 => {
+                let arr = array.as_any().downcast_ref::<Date64Array>().unwrap();
+                let millis = arr.value(row_idx);
+                // Date64 is milliseconds since 1970-01-01
+                let datetime = chrono::DateTime::from_timestamp_millis(millis);
+                match datetime {
+                    Some(dt) => dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
+                    None => "Invalid date".to_string(),
+                }
+            }
+            DataType::Timestamp(unit, _) => {
+                use arrow::datatypes::TimeUnit;
+                let value = match unit {
+                    TimeUnit::Second => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<TimestampSecondArray>()
+                            .unwrap();
+                        chrono::DateTime::from_timestamp(arr.value(row_idx), 0)
+                    }
+                    TimeUnit::Millisecond => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<TimestampMillisecondArray>()
+                            .unwrap();
+                        chrono::DateTime::from_timestamp_millis(arr.value(row_idx))
+                    }
+                    TimeUnit::Microsecond => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<TimestampMicrosecondArray>()
+                            .unwrap();
+                        chrono::DateTime::from_timestamp_micros(arr.value(row_idx))
+                    }
+                    TimeUnit::Nanosecond => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<TimestampNanosecondArray>()
+                            .unwrap();
+                        let nanos = arr.value(row_idx);
+                        let secs = nanos / 1_000_000_000;
+                        let subsec_nanos = (nanos % 1_000_000_000) as u32;
+                        chrono::DateTime::from_timestamp(secs, subsec_nanos)
+                    }
+                };
+                match value {
+                    Some(dt) => dt.format("%Y-%m-%d %H:%M:%S%.9f").to_string(),
+                    None => "Invalid timestamp".to_string(),
+                }
             }
             _ => format!("<unsupported type {:?}>", array.data_type()),
         };
@@ -877,5 +1149,270 @@ mod tests {
         // Verify view no longer exists
         let result = executor.execute("SELECT * FROM test_view").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_decode_function() {
+        let executor = Executor::new();
+
+        // Test DECODE with integer matching
+        let response = executor
+            .execute("SELECT DECODE(1, 1, 'one', 2, 'two', 'other') as result")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("one".to_string()));
+
+        // Test DECODE with second match
+        let response = executor
+            .execute("SELECT DECODE(2, 1, 'one', 2, 'two', 'other') as result")
+            .await
+            .unwrap();
+
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("two".to_string()));
+
+        // Test DECODE with default
+        let response = executor
+            .execute("SELECT DECODE(3, 1, 'one', 2, 'two', 'other') as result")
+            .await
+            .unwrap();
+
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("other".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_decode_with_column() {
+        let executor = Executor::new();
+        executor
+            .execute("CREATE TABLE decode_test (id INT, status VARCHAR)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO decode_test VALUES (1, 'A'), (2, 'B'), (3, 'C'), (4, 'D')")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, DECODE(status, 'A', 'Active', 'B', 'Blocked', 'Unknown') as status_name FROM decode_test ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 4);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][1], Some("Active".to_string()));
+        assert_eq!(data[1][1], Some("Blocked".to_string()));
+        assert_eq!(data[2][1], Some("Unknown".to_string()));
+        assert_eq!(data[3][1], Some("Unknown".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_date_trunc() {
+        let executor = Executor::new();
+
+        // Test DATE_TRUNC with month
+        let response = executor
+            .execute("SELECT DATE_TRUNC('month', DATE '2024-03-15') as truncated")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        // Should return 2024-03-01
+        assert!(data[0][0].as_ref().unwrap().contains("2024-03-01"));
+    }
+
+    #[tokio::test]
+    async fn test_extract_function() {
+        let executor = Executor::new();
+
+        // Test EXTRACT YEAR
+        let response = executor
+            .execute("SELECT EXTRACT(YEAR FROM DATE '2024-03-15') as year")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("2024".to_string()));
+
+        // Test EXTRACT MONTH
+        let response = executor
+            .execute("SELECT EXTRACT(MONTH FROM DATE '2024-03-15') as month")
+            .await
+            .unwrap();
+
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("3".to_string()));
+
+        // Test EXTRACT DAY
+        let response = executor
+            .execute("SELECT EXTRACT(DAY FROM DATE '2024-03-15') as day")
+            .await
+            .unwrap();
+
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("15".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_date_part() {
+        let executor = Executor::new();
+
+        // Test DATE_PART function (should be converted to EXTRACT by SQL rewriter)
+        let response = executor
+            .execute("SELECT DATE_PART('year', DATE '2024-03-15') as year")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("2024".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_concat_ws() {
+        let executor = Executor::new();
+
+        // Test CONCAT_WS function
+        let response = executor
+            .execute("SELECT CONCAT_WS(',', 'a', 'b', 'c') as result")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("a,b,c".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_replace_function() {
+        let executor = Executor::new();
+
+        // Test REPLACE function
+        let response = executor
+            .execute("SELECT REPLACE('hello world', 'world', 'rust') as result")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("hello rust".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_substr_function() {
+        let executor = Executor::new();
+
+        // Test SUBSTR function (Snowflake-style with 1-based index)
+        let response = executor
+            .execute("SELECT SUBSTR('hello world', 1, 5) as result")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_show_tables() {
+        let executor = Executor::new();
+
+        // Create some tables
+        executor
+            .execute("CREATE TABLE show_test1 (id INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("CREATE TABLE show_test2 (id INT)")
+            .await
+            .unwrap();
+
+        // Show tables
+        let response = executor.execute("SHOW TABLES").await.unwrap();
+
+        // Should include our tables
+        let data = response.data.unwrap();
+        let table_names: Vec<String> = data.iter().map(|row| row[0].clone().unwrap()).collect();
+        assert!(table_names.contains(&"show_test1".to_string()));
+        assert!(table_names.contains(&"show_test2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_show_schemas() {
+        let executor = Executor::new();
+
+        let response = executor.execute("SHOW SCHEMAS").await.unwrap();
+
+        assert!(response.result_set_meta_data.num_rows >= 1);
+        let data = response.data.unwrap();
+        let schema_names: Vec<String> = data.iter().map(|row| row[0].clone().unwrap()).collect();
+        assert!(schema_names.contains(&"public".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_show_databases() {
+        let executor = Executor::new();
+
+        let response = executor.execute("SHOW DATABASES").await.unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("default".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_describe_table() {
+        let executor = Executor::new();
+
+        // Create a table with various column types
+        executor
+            .execute("CREATE TABLE describe_test (id INT, name VARCHAR, active BOOLEAN)")
+            .await
+            .unwrap();
+
+        // Test DESCRIBE TABLE
+        let response = executor
+            .execute("DESCRIBE TABLE describe_test")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 3);
+        let data = response.data.unwrap();
+
+        // Check column names
+        assert_eq!(data[0][0], Some("id".to_string()));
+        assert_eq!(data[1][0], Some("name".to_string()));
+        assert_eq!(data[2][0], Some("active".to_string()));
+
+        // Check column types
+        assert_eq!(data[0][1], Some("NUMBER".to_string()));
+        assert_eq!(data[1][1], Some("VARCHAR".to_string()));
+        assert_eq!(data[2][1], Some("BOOLEAN".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_desc_alias() {
+        let executor = Executor::new();
+
+        // Create a table
+        executor
+            .execute("CREATE TABLE desc_test (id INT, value FLOAT)")
+            .await
+            .unwrap();
+
+        // Test DESC (short form)
+        let response = executor.execute("DESC desc_test").await.unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("id".to_string()));
+        assert_eq!(data[1][0], Some("value".to_string()));
     }
 }

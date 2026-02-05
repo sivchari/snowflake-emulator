@@ -8,6 +8,7 @@
 //! - `IFF(condition, true_value, false_value)` - Inline IF expression
 //! - `NVL(expr1, expr2)` - Return expr2 if expr1 is NULL
 //! - `NVL2(expr1, expr2, expr3)` - Return expr2 if expr1 is NOT NULL, else expr3
+//! - `DECODE(expr, search1, result1, ..., default)` - Equivalent to CASE WHEN
 //!
 //! ### JSON Functions
 //! - `PARSE_JSON(string)` - Parse string as JSON
@@ -93,7 +94,7 @@ mod try_functions;
 mod type_check;
 
 // Conditional functions
-pub use conditional::{iff, nvl, nvl2};
+pub use conditional::{decode, iff, nvl, nvl2};
 
 // JSON functions
 pub use json::{parse_json, to_json};

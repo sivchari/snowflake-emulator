@@ -1,10 +1,11 @@
-//! Conditional functions (IFF, NVL, NVL2)
+//! Conditional functions (IFF, NVL, NVL2, DECODE)
 //!
 //! Snowflake-compatible conditional expression functions.
 
 use std::any::Any;
+use std::sync::Arc;
 
-use arrow::array::{Array, BooleanArray};
+use arrow::array::{Array, ArrayRef, BooleanArray, StringBuilder};
 use arrow::compute::kernels::zip::zip;
 use arrow::datatypes::DataType;
 use datafusion::common::Result;
@@ -293,6 +294,203 @@ pub fn nvl2() -> ScalarUDF {
     ScalarUDF::from(Nvl2Func::new())
 }
 
+// ============================================================================
+// DECODE(expr, search1, result1, search2, result2, ..., default)
+// ============================================================================
+
+/// DECODE function - Compares expr to search values and returns corresponding result
+///
+/// Syntax: DECODE(expr, search1, result1, search2, result2, ..., default)
+///
+/// Equivalent to:
+/// ```sql
+/// CASE expr
+///     WHEN search1 THEN result1
+///     WHEN search2 THEN result2
+///     ...
+///     ELSE default
+/// END
+/// ```
+///
+/// - Minimum 3 arguments: DECODE(expr, search1, result1)
+/// - Optional default value at the end (when odd number of arguments after expr)
+/// - Returns NULL if no match and no default provided
+#[derive(Debug)]
+pub struct DecodeFunc {
+    signature: Signature,
+}
+
+impl Default for DecodeFunc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DecodeFunc {
+    pub fn new() -> Self {
+        Self {
+            // VariadicAny allows any number and type of arguments
+            signature: Signature::new(TypeSignature::VariadicAny, Volatility::Immutable),
+        }
+    }
+
+    /// Compare two scalar values for equality
+    fn values_equal(
+        val1: &datafusion::common::ScalarValue,
+        val2: &datafusion::common::ScalarValue,
+    ) -> bool {
+        // Handle NULL comparison: NULL != NULL in DECODE
+        if val1.is_null() || val2.is_null() {
+            return false;
+        }
+
+        // Try to compare as strings for flexibility
+        let str1 = Self::scalar_to_string(val1);
+        let str2 = Self::scalar_to_string(val2);
+
+        match (str1, str2) {
+            (Some(s1), Some(s2)) => s1 == s2,
+            _ => false,
+        }
+    }
+
+    /// Convert scalar value to string for comparison
+    fn scalar_to_string(val: &datafusion::common::ScalarValue) -> Option<String> {
+        use datafusion::common::ScalarValue;
+
+        match val {
+            ScalarValue::Null => None,
+            ScalarValue::Boolean(Some(b)) => Some(b.to_string()),
+            ScalarValue::Int8(Some(v)) => Some(v.to_string()),
+            ScalarValue::Int16(Some(v)) => Some(v.to_string()),
+            ScalarValue::Int32(Some(v)) => Some(v.to_string()),
+            ScalarValue::Int64(Some(v)) => Some(v.to_string()),
+            ScalarValue::UInt8(Some(v)) => Some(v.to_string()),
+            ScalarValue::UInt16(Some(v)) => Some(v.to_string()),
+            ScalarValue::UInt32(Some(v)) => Some(v.to_string()),
+            ScalarValue::UInt64(Some(v)) => Some(v.to_string()),
+            ScalarValue::Float32(Some(v)) => Some(v.to_string()),
+            ScalarValue::Float64(Some(v)) => Some(v.to_string()),
+            ScalarValue::Utf8(Some(s)) | ScalarValue::LargeUtf8(Some(s)) => Some(s.clone()),
+            ScalarValue::Utf8View(Some(s)) => Some(s.to_string()),
+            _ => val.to_string().parse().ok(),
+        }
+    }
+}
+
+impl ScalarUDFImpl for DecodeFunc {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "decode"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+        // Return type is the type of the first result (third argument)
+        // If not available, return Utf8
+        Ok(arg_types.get(2).cloned().unwrap_or(DataType::Utf8))
+    }
+
+    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
+        if args.len() < 3 {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "DECODE requires at least 3 arguments: DECODE(expr, search, result, ...)"
+                    .to_string(),
+            ));
+        }
+
+        let expr = &args[0];
+
+        // Calculate pairs and default
+        // After expr, we have search/result pairs and optionally a default
+        // args[1], args[2] = search1, result1
+        // args[3], args[4] = search2, result2
+        // ...
+        // If (args.len() - 1) is odd, the last argument is the default
+        let remaining = args.len() - 1;
+        let has_default = remaining % 2 == 1;
+        let num_pairs = remaining / 2;
+
+        // Convert expr to array for row-wise processing
+        let expr_array = expr.to_array(num_rows)?;
+
+        // Build result array
+        let mut result_builder = StringBuilder::new();
+
+        for row_idx in 0..num_rows {
+            // Get expr value for this row
+            let expr_scalar =
+                datafusion::common::ScalarValue::try_from_array(&expr_array, row_idx)?;
+
+            let mut matched = false;
+            let mut result_value: Option<datafusion::common::ScalarValue> = None;
+
+            // Check each search/result pair
+            for pair_idx in 0..num_pairs {
+                let search_idx = 1 + pair_idx * 2;
+                let result_idx = 2 + pair_idx * 2;
+
+                let search_array = args[search_idx].to_array(num_rows)?;
+                let search_scalar =
+                    datafusion::common::ScalarValue::try_from_array(&search_array, row_idx)?;
+
+                if Self::values_equal(&expr_scalar, &search_scalar) {
+                    let result_array = args[result_idx].to_array(num_rows)?;
+                    result_value = Some(datafusion::common::ScalarValue::try_from_array(
+                        &result_array,
+                        row_idx,
+                    )?);
+                    matched = true;
+                    break;
+                }
+            }
+
+            // If no match, use default or NULL
+            if !matched {
+                if has_default {
+                    let default_idx = args.len() - 1;
+                    let default_array = args[default_idx].to_array(num_rows)?;
+                    result_value = Some(datafusion::common::ScalarValue::try_from_array(
+                        &default_array,
+                        row_idx,
+                    )?);
+                }
+            }
+
+            // Append to result builder
+            match result_value {
+                Some(val) => {
+                    if val.is_null() {
+                        result_builder.append_null();
+                    } else {
+                        let s = Self::scalar_to_string(&val).unwrap_or_default();
+                        result_builder.append_value(&s);
+                    }
+                }
+                None => result_builder.append_null(),
+            }
+        }
+
+        let result_array: ArrayRef = Arc::new(result_builder.finish());
+        Ok(ColumnarValue::Array(result_array))
+    }
+
+    fn documentation(&self) -> Option<&Documentation> {
+        None
+    }
+}
+
+/// Create DECODE scalar UDF
+pub fn decode() -> ScalarUDF {
+    ScalarUDF::from(DecodeFunc::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,6 +602,125 @@ mod tests {
             assert_eq!(v, "no value");
         } else {
             panic!("Expected scalar utf8");
+        }
+    }
+
+    #[test]
+    fn test_decode_match_first() {
+        let func = DecodeFunc::new();
+
+        // DECODE(1, 1, 'one', 2, 'two', 'other') -> 'one'
+        let expr = ColumnarValue::Scalar(ScalarValue::Int64(Some(1)));
+        let search1 = ColumnarValue::Scalar(ScalarValue::Int64(Some(1)));
+        let result1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("one".to_string())));
+        let search2 = ColumnarValue::Scalar(ScalarValue::Int64(Some(2)));
+        let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("two".to_string())));
+        let default = ColumnarValue::Scalar(ScalarValue::Utf8(Some("other".to_string())));
+
+        let result = func
+            .invoke_batch(&[expr, search1, result1, search2, result2, default], 1)
+            .unwrap();
+
+        if let ColumnarValue::Array(arr) = result {
+            let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
+            assert_eq!(str_arr.value(0), "one");
+        } else {
+            panic!("Expected array result");
+        }
+    }
+
+    #[test]
+    fn test_decode_match_second() {
+        let func = DecodeFunc::new();
+
+        // DECODE(2, 1, 'one', 2, 'two', 'other') -> 'two'
+        let expr = ColumnarValue::Scalar(ScalarValue::Int64(Some(2)));
+        let search1 = ColumnarValue::Scalar(ScalarValue::Int64(Some(1)));
+        let result1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("one".to_string())));
+        let search2 = ColumnarValue::Scalar(ScalarValue::Int64(Some(2)));
+        let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("two".to_string())));
+        let default = ColumnarValue::Scalar(ScalarValue::Utf8(Some("other".to_string())));
+
+        let result = func
+            .invoke_batch(&[expr, search1, result1, search2, result2, default], 1)
+            .unwrap();
+
+        if let ColumnarValue::Array(arr) = result {
+            let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
+            assert_eq!(str_arr.value(0), "two");
+        } else {
+            panic!("Expected array result");
+        }
+    }
+
+    #[test]
+    fn test_decode_default() {
+        let func = DecodeFunc::new();
+
+        // DECODE(3, 1, 'one', 2, 'two', 'other') -> 'other'
+        let expr = ColumnarValue::Scalar(ScalarValue::Int64(Some(3)));
+        let search1 = ColumnarValue::Scalar(ScalarValue::Int64(Some(1)));
+        let result1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("one".to_string())));
+        let search2 = ColumnarValue::Scalar(ScalarValue::Int64(Some(2)));
+        let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("two".to_string())));
+        let default = ColumnarValue::Scalar(ScalarValue::Utf8(Some("other".to_string())));
+
+        let result = func
+            .invoke_batch(&[expr, search1, result1, search2, result2, default], 1)
+            .unwrap();
+
+        if let ColumnarValue::Array(arr) = result {
+            let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
+            assert_eq!(str_arr.value(0), "other");
+        } else {
+            panic!("Expected array result");
+        }
+    }
+
+    #[test]
+    fn test_decode_no_default_null() {
+        let func = DecodeFunc::new();
+
+        // DECODE(3, 1, 'one', 2, 'two') -> NULL (no default, no match)
+        let expr = ColumnarValue::Scalar(ScalarValue::Int64(Some(3)));
+        let search1 = ColumnarValue::Scalar(ScalarValue::Int64(Some(1)));
+        let result1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("one".to_string())));
+        let search2 = ColumnarValue::Scalar(ScalarValue::Int64(Some(2)));
+        let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("two".to_string())));
+
+        let result = func
+            .invoke_batch(&[expr, search1, result1, search2, result2], 1)
+            .unwrap();
+
+        if let ColumnarValue::Array(arr) = result {
+            let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
+            assert!(str_arr.is_null(0));
+        } else {
+            panic!("Expected array result");
+        }
+    }
+
+    #[test]
+    fn test_decode_string_values() {
+        let func = DecodeFunc::new();
+
+        // DECODE('A', 'A', 'Alpha', 'B', 'Beta', 'Other') -> 'Alpha'
+        let expr = ColumnarValue::Scalar(ScalarValue::Utf8(Some("A".to_string())));
+        let search1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("A".to_string())));
+        let result1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("Alpha".to_string())));
+        let search2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("B".to_string())));
+        let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("Beta".to_string())));
+        let default = ColumnarValue::Scalar(ScalarValue::Utf8(Some("Other".to_string())));
+
+        let result = func
+            .invoke_batch(&[expr, search1, result1, search2, result2, default], 1)
+            .unwrap();
+
+        if let ColumnarValue::Array(arr) = result {
+            let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
+            assert_eq!(str_arr.value(0), "Alpha");
+        } else {
+            panic!("Expected array result");
         }
     }
 }
