@@ -792,4 +792,35 @@ mod tests {
         assert_eq!(data[2][1], Some("2".to_string()));
         assert_eq!(data[3][1], Some("2".to_string()));
     }
+
+    #[tokio::test]
+    async fn test_qualify_clause() {
+        let executor = Executor::new();
+        executor
+            .execute("CREATE TABLE test_qualify (id INT, category VARCHAR, value INT)")
+            .await
+            .unwrap();
+        executor
+            .execute(
+                "INSERT INTO test_qualify VALUES (1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40)",
+            )
+            .await
+            .unwrap();
+
+        // Get first row per category using ROW_NUMBER and QUALIFY
+        let response = executor
+            .execute(
+                "SELECT id, category, value, ROW_NUMBER() OVER (PARTITION BY category ORDER BY id) as rn FROM test_qualify QUALIFY rn = 1 ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+        let data = response.data.unwrap();
+        // First row of category A (id=1) and first row of category B (id=3)
+        assert_eq!(data[0][0], Some("1".to_string()));
+        assert_eq!(data[0][1], Some("A".to_string()));
+        assert_eq!(data[1][0], Some("3".to_string()));
+        assert_eq!(data[1][1], Some("B".to_string()));
+    }
 }

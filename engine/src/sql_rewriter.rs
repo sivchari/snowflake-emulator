@@ -28,6 +28,9 @@ pub fn rewrite(sql: &str) -> String {
     // Rewrite function names for DataFusion compatibility
     result = rewrite_function_names(&result);
 
+    // Rewrite QUALIFY clause
+    result = rewrite_qualify(&result);
+
     // Rewrite LATERAL FLATTEN
     result = rewrite_lateral_flatten(&result);
 
@@ -91,6 +94,48 @@ fn rewrite_function_names(sql: &str) -> String {
         .to_string();
 
     result
+}
+
+/// Rewrite QUALIFY clause to CTE + WHERE
+///
+/// Pattern: `SELECT ... FROM ... QUALIFY condition`
+/// Becomes: `WITH _qualify AS (SELECT ... FROM ...) SELECT * FROM _qualify WHERE condition`
+///
+/// Example:
+/// ```sql
+/// SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as rn FROM t QUALIFY rn = 1
+/// ```
+/// Becomes:
+/// ```sql
+/// WITH _qualify AS (SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as rn FROM t) SELECT * FROM _qualify WHERE rn = 1
+/// ```
+fn rewrite_qualify(sql: &str) -> String {
+    // Pattern to match: ... QUALIFY condition [ORDER BY ...] [LIMIT ...]
+    // QUALIFY must come after FROM/WHERE/GROUP BY/HAVING but before ORDER BY/LIMIT
+    let qualify_pattern = Regex::new(
+        r"(?is)(SELECT\s+.+?FROM\s+.+?)\s+QUALIFY\s+(.+?)(?:\s+(ORDER\s+BY.+?|LIMIT.+?))?$",
+    )
+    .unwrap();
+
+    if let Some(captures) = qualify_pattern.captures(sql) {
+        let select_part = captures.get(1).map_or("", |m| m.as_str()).trim();
+        let qualify_condition = captures.get(2).map_or("", |m| m.as_str()).trim();
+        let trailing_clauses = captures.get(3).map_or("", |m| m.as_str()).trim();
+
+        // Build the CTE query
+        let result = format!(
+            "WITH _qualify AS ({}) SELECT * FROM _qualify WHERE {}",
+            select_part, qualify_condition
+        );
+
+        // Append ORDER BY/LIMIT if present
+        if !trailing_clauses.is_empty() {
+            return format!("{} {}", result, trailing_clauses);
+        }
+        return result;
+    }
+
+    sql.to_string()
 }
 
 /// Rewrite LATERAL FLATTEN to CROSS JOIN with _NUMBERS
@@ -332,5 +377,34 @@ mod tests {
         let sql = "SELECT POSITION('bar' IN 'foobar') FROM t";
         let rewritten = rewrite(sql);
         assert_eq!(rewritten, "SELECT charindex('bar', 'foobar') FROM t");
+    }
+
+    #[test]
+    fn test_qualify_basic() {
+        let sql = "SELECT id, ROW_NUMBER() OVER (ORDER BY id) as rn FROM t QUALIFY rn = 1";
+        let rewritten = rewrite(sql);
+        assert_eq!(
+            rewritten,
+            "WITH _qualify AS (SELECT id, ROW_NUMBER() OVER (ORDER BY id) as rn FROM t) SELECT * FROM _qualify WHERE rn = 1"
+        );
+    }
+
+    #[test]
+    fn test_qualify_with_order_by() {
+        let sql =
+            "SELECT id, ROW_NUMBER() OVER (ORDER BY id) as rn FROM t QUALIFY rn = 1 ORDER BY id";
+        let rewritten = rewrite(sql);
+        assert_eq!(
+            rewritten,
+            "WITH _qualify AS (SELECT id, ROW_NUMBER() OVER (ORDER BY id) as rn FROM t) SELECT * FROM _qualify WHERE rn = 1 ORDER BY id"
+        );
+    }
+
+    #[test]
+    fn test_no_qualify() {
+        let sql = "SELECT id, name FROM t WHERE id > 1";
+        let rewritten = rewrite(sql);
+        // Should not be modified (other than function rewrites which don't apply here)
+        assert_eq!(rewritten, "SELECT id, name FROM t WHERE id > 1");
     }
 }
