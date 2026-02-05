@@ -111,7 +111,7 @@ pub use array::{
 };
 
 // Array/Object functions (FLATTEN helpers)
-pub use flatten::{array_size, flatten_array, get_path, object_keys};
+pub use flatten::{array_size, flatten_array, get, get_path, object_keys};
 
 // Object functions
 pub use object::{
@@ -126,8 +126,8 @@ pub use type_check::{
 
 // String functions
 pub use string::{
-    contains, endswith, regexp_count, regexp_like, regexp_replace, regexp_substr, split,
-    startswith, strtok, strtok_to_array,
+    charindex, contains, endswith, lpad, regexp_count, regexp_like, regexp_replace, regexp_substr,
+    reverse, rpad, split, startswith, strtok, strtok_to_array, translate,
 };
 
 // Aggregate functions

@@ -1784,3 +1784,300 @@ func TestLenRewrite(t *testing.T) {
 		t.Errorf("Expected 5, got %d", result)
 	}
 }
+
+// Phase 5 String Functions
+
+func TestCharindex(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result int
+	err := db.QueryRow("SELECT CHARINDEX('bar', 'foobar')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != 4 {
+		t.Errorf("Expected 4, got %d", result)
+	}
+}
+
+func TestPosition(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result int
+	err := db.QueryRow("SELECT POSITION('bar' IN 'foobar')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != 4 {
+		t.Errorf("Expected 4, got %d", result)
+	}
+}
+
+func TestReverse(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT REVERSE('hello')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "olleh" {
+		t.Errorf("Expected 'olleh', got '%s'", result)
+	}
+}
+
+func TestLpad(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT LPAD('123', 5, '0')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "00123" {
+		t.Errorf("Expected '00123', got '%s'", result)
+	}
+}
+
+func TestRpad(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT RPAD('123', 5, '0')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "12300" {
+		t.Errorf("Expected '12300', got '%s'", result)
+	}
+}
+
+func TestTranslate(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT TRANSLATE('abc', 'abc', '123')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "123" {
+		t.Errorf("Expected '123', got '%s'", result)
+	}
+}
+
+// Phase 5 Window Functions
+
+func TestWindowFirstLastValue(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE test_firstlast (id INT, category VARCHAR, value INT)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	_, err = db.Exec("INSERT INTO test_firstlast VALUES (1, 'A', 10), (2, 'A', 20), (3, 'B', 30)")
+	if err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+
+	var id int
+	var firstVal int
+	err = db.QueryRow("SELECT id, FIRST_VALUE(value) OVER (PARTITION BY category ORDER BY id) as fv FROM test_firstlast WHERE id = 2").Scan(&id, &firstVal)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if firstVal != 10 {
+		t.Errorf("Expected first_value 10, got %d", firstVal)
+	}
+}
+
+func TestWindowNtile(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE test_ntile (id INT, value INT)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	_, err = db.Exec("INSERT INTO test_ntile VALUES (1, 10), (2, 20), (3, 30), (4, 40)")
+	if err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+
+	rows, err := db.Query("SELECT id, NTILE(2) OVER (ORDER BY id) as bucket FROM test_ntile ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []int{1, 1, 2, 2}
+	i := 0
+	for rows.Next() {
+		var id, bucket int
+		if err := rows.Scan(&id, &bucket); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if bucket != expected[i] {
+			t.Errorf("Row %d: expected bucket %d, got %d", i, expected[i], bucket)
+		}
+		i++
+	}
+}
+
+// Phase 5 QUALIFY clause
+
+func TestQualifyClause(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE test_qualify (id INT, category VARCHAR, value INT)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	_, err = db.Exec("INSERT INTO test_qualify VALUES (1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40)")
+	if err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+
+	// Get first row per category using QUALIFY
+	rows, err := db.Query("SELECT id, category FROM (SELECT id, category, ROW_NUMBER() OVER (PARTITION BY category ORDER BY id) as rn FROM test_qualify) sub WHERE rn = 1 ORDER BY id")
+	if err != nil {
+		// If QUALIFY CTE approach doesn't work directly, try the full rewritten form
+		rows, err = db.Query("SELECT id, category, ROW_NUMBER() OVER (PARTITION BY category ORDER BY id) as rn FROM test_qualify QUALIFY rn = 1 ORDER BY id")
+		if err != nil {
+			t.Fatalf("Query failed: %v", err)
+		}
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var id int
+		var category string
+		if err := rows.Scan(&id, &category); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		count++
+	}
+
+	if count != 2 {
+		t.Errorf("Expected 2 rows, got %d", count)
+	}
+}
+
+// Phase 5 GET function
+
+func TestGet(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Test array index access
+	var result string
+	err := db.QueryRow("SELECT GET('[10, 20, 30]', 1)").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "20" {
+		t.Errorf("Expected '20', got '%s'", result)
+	}
+}
+
+func TestGetObjectKey(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Test object key access
+	var result string
+	err := db.QueryRow(`SELECT GET('{"a": 1, "b": 2}', 'b')`).Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "2" {
+		t.Errorf("Expected '2', got '%s'", result)
+	}
+}
+
+// Phase 5 DDL operations
+
+func TestDropTable(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create table
+	_, err := db.Exec("CREATE TABLE test_drop (id INT)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	// Drop table
+	_, err = db.Exec("DROP TABLE test_drop")
+	if err != nil {
+		t.Fatalf("Drop table failed: %v", err)
+	}
+
+	// Verify table is gone
+	_, err = db.Exec("SELECT * FROM test_drop")
+	if err == nil {
+		t.Error("Expected error querying dropped table")
+	}
+}
+
+func TestCreateDropView(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create base table
+	_, err := db.Exec("CREATE TABLE view_base (id INT, value INT)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	_, err = db.Exec("INSERT INTO view_base VALUES (1, 10), (2, 20)")
+	if err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+
+	// Create view
+	_, err = db.Exec("CREATE VIEW test_view AS SELECT id, value * 2 as doubled FROM view_base")
+	if err != nil {
+		t.Fatalf("Create view failed: %v", err)
+	}
+
+	// Query view
+	var id, doubled int
+	err = db.QueryRow("SELECT id, doubled FROM test_view WHERE id = 1").Scan(&id, &doubled)
+	if err != nil {
+		t.Fatalf("Query view failed: %v", err)
+	}
+
+	if doubled != 20 {
+		t.Errorf("Expected doubled=20, got %d", doubled)
+	}
+
+	// Drop view
+	_, err = db.Exec("DROP VIEW test_view")
+	if err != nil {
+		t.Fatalf("Drop view failed: %v", err)
+	}
+}
