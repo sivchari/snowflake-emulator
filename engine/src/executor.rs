@@ -694,9 +694,7 @@ mod tests {
     async fn test_window_first_last_value() {
         let executor = Executor::new();
         executor
-            .execute(
-                "CREATE TABLE test_fl (id INT, category VARCHAR, value INT)",
-            )
+            .execute("CREATE TABLE test_fl (id INT, category VARCHAR, value INT)")
             .await
             .unwrap();
         executor
@@ -735,15 +733,11 @@ mod tests {
     async fn test_window_nth_value() {
         let executor = Executor::new();
         executor
-            .execute(
-                "CREATE TABLE test_nth (id INT, value INT)",
-            )
+            .execute("CREATE TABLE test_nth (id INT, value INT)")
             .await
             .unwrap();
         executor
-            .execute(
-                "INSERT INTO test_nth VALUES (1, 100), (2, 200), (3, 300)",
-            )
+            .execute("INSERT INTO test_nth VALUES (1, 100), (2, 200), (3, 300)")
             .await
             .unwrap();
 
@@ -766,22 +760,16 @@ mod tests {
     async fn test_window_ntile() {
         let executor = Executor::new();
         executor
-            .execute(
-                "CREATE TABLE test_ntile (id INT, value INT)",
-            )
+            .execute("CREATE TABLE test_ntile (id INT, value INT)")
             .await
             .unwrap();
         executor
-            .execute(
-                "INSERT INTO test_ntile VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
-            )
+            .execute("INSERT INTO test_ntile VALUES (1, 10), (2, 20), (3, 30), (4, 40)")
             .await
             .unwrap();
 
         let response = executor
-            .execute(
-                "SELECT id, NTILE(2) OVER (ORDER BY id) as bucket FROM test_ntile ORDER BY id",
-            )
+            .execute("SELECT id, NTILE(2) OVER (ORDER BY id) as bucket FROM test_ntile ORDER BY id")
             .await
             .unwrap();
 
@@ -890,5 +878,4 @@ mod tests {
         let result = executor.execute("SELECT * FROM test_view").await;
         assert!(result.is_err());
     }
-
 }
