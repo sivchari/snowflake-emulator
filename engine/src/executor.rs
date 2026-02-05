@@ -688,4 +688,108 @@ mod tests {
         // Category B sum = 30
         assert_eq!(data[2][2], Some("30".to_string()));
     }
+
+    #[tokio::test]
+    async fn test_window_first_last_value() {
+        let executor = Executor::new();
+        executor
+            .execute(
+                "CREATE TABLE test_fl (id INT, category VARCHAR, value INT)",
+            )
+            .await
+            .unwrap();
+        executor
+            .execute(
+                "INSERT INTO test_fl VALUES (1, 'A', 10), (2, 'A', 20), (3, 'A', 30), (4, 'B', 40), (5, 'B', 50)",
+            )
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, FIRST_VALUE(value) OVER (PARTITION BY category ORDER BY id) as first_val, LAST_VALUE(value) OVER (PARTITION BY category ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val FROM test_fl ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 5);
+        let data = response.data.unwrap();
+        // First value in partition A is 10
+        assert_eq!(data[0][1], Some("10".to_string()));
+        assert_eq!(data[1][1], Some("10".to_string()));
+        assert_eq!(data[2][1], Some("10".to_string()));
+        // Last value in partition A is 30
+        assert_eq!(data[0][2], Some("30".to_string()));
+        assert_eq!(data[1][2], Some("30".to_string()));
+        assert_eq!(data[2][2], Some("30".to_string()));
+        // First value in partition B is 40
+        assert_eq!(data[3][1], Some("40".to_string()));
+        assert_eq!(data[4][1], Some("40".to_string()));
+        // Last value in partition B is 50
+        assert_eq!(data[3][2], Some("50".to_string()));
+        assert_eq!(data[4][2], Some("50".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_window_nth_value() {
+        let executor = Executor::new();
+        executor
+            .execute(
+                "CREATE TABLE test_nth (id INT, value INT)",
+            )
+            .await
+            .unwrap();
+        executor
+            .execute(
+                "INSERT INTO test_nth VALUES (1, 100), (2, 200), (3, 300)",
+            )
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, NTH_VALUE(value, 2) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as second_val FROM test_nth ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 3);
+        let data = response.data.unwrap();
+        // Second value is 200 for all rows
+        assert_eq!(data[0][1], Some("200".to_string()));
+        assert_eq!(data[1][1], Some("200".to_string()));
+        assert_eq!(data[2][1], Some("200".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_window_ntile() {
+        let executor = Executor::new();
+        executor
+            .execute(
+                "CREATE TABLE test_ntile (id INT, value INT)",
+            )
+            .await
+            .unwrap();
+        executor
+            .execute(
+                "INSERT INTO test_ntile VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+            )
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, NTILE(2) OVER (ORDER BY id) as bucket FROM test_ntile ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 4);
+        let data = response.data.unwrap();
+        // First 2 rows in bucket 1, last 2 in bucket 2
+        assert_eq!(data[0][1], Some("1".to_string()));
+        assert_eq!(data[1][1], Some("1".to_string()));
+        assert_eq!(data[2][1], Some("2".to_string()));
+        assert_eq!(data[3][1], Some("2".to_string()));
+    }
 }
