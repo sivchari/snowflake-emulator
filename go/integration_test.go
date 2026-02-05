@@ -2081,3 +2081,354 @@ func TestCreateDropView(t *testing.T) {
 		t.Fatalf("Drop view failed: %v", err)
 	}
 }
+
+// ============================================================================
+// Phase 6: Function & Metadata Extension Tests
+// ============================================================================
+
+func TestDecode(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected string
+	}{
+		{
+			name:     "match first",
+			query:    "SELECT DECODE(1, 1, 'one', 2, 'two', 'other')",
+			expected: "one",
+		},
+		{
+			name:     "match second",
+			query:    "SELECT DECODE(2, 1, 'one', 2, 'two', 'other')",
+			expected: "two",
+		},
+		{
+			name:     "default",
+			query:    "SELECT DECODE(3, 1, 'one', 2, 'two', 'other')",
+			expected: "other",
+		},
+		{
+			name:     "string match",
+			query:    "SELECT DECODE('A', 'A', 'Alpha', 'B', 'Beta', 'Other')",
+			expected: "Alpha",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result string
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestDecodeWithColumn(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE decode_test (id INT, status VARCHAR)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	_, err = db.Exec("INSERT INTO decode_test VALUES (1, 'A'), (2, 'B'), (3, 'C')")
+	if err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+
+	// Query with DECODE
+	rows, err := db.Query("SELECT id, DECODE(status, 'A', 'Active', 'B', 'Blocked', 'Unknown') FROM decode_test ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []string{"Active", "Blocked", "Unknown"}
+	i := 0
+	for rows.Next() {
+		var id int
+		var status string
+		if err := rows.Scan(&id, &status); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if status != expected[i] {
+			t.Errorf("Row %d: expected %s, got %s", i, expected[i], status)
+		}
+		i++
+	}
+}
+
+func TestDateTrunc(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT DATE_TRUNC('month', DATE '2024-03-15')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// Result should contain 2024-03-01
+	if len(result) < 10 || result[:10] != "2024-03-01" {
+		t.Errorf("Expected date starting with 2024-03-01, got %s", result)
+	}
+}
+
+func TestExtract(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	tests := []struct {
+		name     string
+		query    string
+		expected int
+	}{
+		{
+			name:     "year",
+			query:    "SELECT EXTRACT(YEAR FROM DATE '2024-03-15')",
+			expected: 2024,
+		},
+		{
+			name:     "month",
+			query:    "SELECT EXTRACT(MONTH FROM DATE '2024-03-15')",
+			expected: 3,
+		},
+		{
+			name:     "day",
+			query:    "SELECT EXTRACT(DAY FROM DATE '2024-03-15')",
+			expected: 15,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result int
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %d, got %d", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestDatePart(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result int
+	err := db.QueryRow("SELECT DATE_PART('year', DATE '2024-03-15')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != 2024 {
+		t.Errorf("Expected 2024, got %d", result)
+	}
+}
+
+func TestConcatWS(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT CONCAT_WS(',', 'a', 'b', 'c')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "a,b,c" {
+		t.Errorf("Expected 'a,b,c', got '%s'", result)
+	}
+}
+
+func TestReplace(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT REPLACE('hello world', 'world', 'rust')").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "hello rust" {
+		t.Errorf("Expected 'hello rust', got '%s'", result)
+	}
+}
+
+func TestSubstr(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	var result string
+	err := db.QueryRow("SELECT SUBSTR('hello world', 1, 5)").Scan(&result)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if result != "hello" {
+		t.Errorf("Expected 'hello', got '%s'", result)
+	}
+}
+
+func TestShowTables(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create a table first
+	_, err := db.Exec("CREATE TABLE show_test_table (id INT)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	// Query SHOW TABLES
+	rows, err := db.Query("SHOW TABLES")
+	if err != nil {
+		t.Fatalf("SHOW TABLES failed: %v", err)
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if tableName == "show_test_table" {
+			found = true
+		}
+	}
+
+	if !found {
+		t.Error("Created table not found in SHOW TABLES output")
+	}
+}
+
+func TestShowSchemas(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	rows, err := db.Query("SHOW SCHEMAS")
+	if err != nil {
+		t.Fatalf("SHOW SCHEMAS failed: %v", err)
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var schemaName string
+		if err := rows.Scan(&schemaName); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if schemaName == "public" {
+			found = true
+		}
+	}
+
+	if !found {
+		t.Error("'public' schema not found in SHOW SCHEMAS output")
+	}
+}
+
+func TestShowDatabases(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	rows, err := db.Query("SHOW DATABASES")
+	if err != nil {
+		t.Fatalf("SHOW DATABASES failed: %v", err)
+	}
+	defer rows.Close()
+
+	hasRow := false
+	for rows.Next() {
+		var dbName string
+		if err := rows.Scan(&dbName); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		hasRow = true
+	}
+
+	if !hasRow {
+		t.Error("No databases returned from SHOW DATABASES")
+	}
+}
+
+func TestDescribeTable(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create a table
+	_, err := db.Exec("CREATE TABLE describe_test_table (id INT, name VARCHAR, active BOOLEAN)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	// Query DESCRIBE TABLE
+	rows, err := db.Query("DESCRIBE TABLE describe_test_table")
+	if err != nil {
+		t.Fatalf("DESCRIBE TABLE failed: %v", err)
+	}
+	defer rows.Close()
+
+	expectedColumns := []string{"id", "name", "active"}
+	i := 0
+	for rows.Next() {
+		var colName, colType, kind, null string
+		if err := rows.Scan(&colName, &colType, &kind, &null); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if i < len(expectedColumns) && colName != expectedColumns[i] {
+			t.Errorf("Expected column name %s, got %s", expectedColumns[i], colName)
+		}
+		i++
+	}
+
+	if i != 3 {
+		t.Errorf("Expected 3 columns, got %d", i)
+	}
+}
+
+func TestDescAlias(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create a table
+	_, err := db.Exec("CREATE TABLE desc_alias_test (id INT, value FLOAT)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	// Query DESC (short alias)
+	rows, err := db.Query("DESC desc_alias_test")
+	if err != nil {
+		t.Fatalf("DESC failed: %v", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var colName, colType, kind, null string
+		if err := rows.Scan(&colName, &colType, &kind, &null); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		count++
+	}
+
+	if count != 2 {
+		t.Errorf("Expected 2 columns, got %d", count)
+	}
+}
