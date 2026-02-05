@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	sf "github.com/snowflakedb/gosnowflake"
@@ -1278,6 +1279,64 @@ func TestNumbersTable(t *testing.T) {
 	}
 }
 
+func TestLateralFlattenWithPath(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create test table with nested JSON
+	_, err := db.Exec("CREATE TABLE test_flatten_path (id INT, data VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_flatten_path")
+
+	// Insert test data with nested JSON
+	_, err = db.Exec(`INSERT INTO test_flatten_path VALUES
+		(1, '{"items": [1, 2, 3]}'),
+		(2, '{"items": [4, 5]}')`)
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Test LATERAL FLATTEN with path option
+	rows, err := db.Query("SELECT t.id, f.value FROM test_flatten_path t, LATERAL FLATTEN(input => t.data, path => 'items') f ORDER BY t.id, f.index")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []struct {
+		id    int
+		value string
+	}{
+		{1, "1"},
+		{1, "2"},
+		{1, "3"},
+		{2, "4"},
+		{2, "5"},
+	}
+
+	i := 0
+	for rows.Next() {
+		var id int
+		var value string
+		if err := rows.Scan(&id, &value); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if i >= len(expected) {
+			t.Fatalf("More rows than expected")
+		}
+		if id != expected[i].id || value != expected[i].value {
+			t.Errorf("Row %d: expected (%d, %s), got (%d, %s)", i, expected[i].id, expected[i].value, id, value)
+		}
+		i++
+	}
+
+	if i != len(expected) {
+		t.Errorf("Expected %d rows, got %d", len(expected), i)
+	}
+}
+
 // =============================================================================
 // Window Function Tests
 // =============================================================================
@@ -2431,4 +2490,128 @@ func TestDescAlias(t *testing.T) {
 	if count != 2 {
 		t.Errorf("Expected 2 columns, got %d", count)
 	}
+}
+
+// =============================================================================
+// Phase 7: Advanced SQL Features Tests
+// =============================================================================
+
+func TestSampleRow(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE sample_test (id INT)")
+	if err != nil {
+		t.Fatalf("Create table failed: %v", err)
+	}
+
+	// Insert 100 rows
+	for i := 1; i <= 100; i++ {
+		_, err := db.Exec(fmt.Sprintf("INSERT INTO sample_test VALUES (%d)", i))
+		if err != nil {
+			t.Fatalf("Insert failed: %v", err)
+		}
+	}
+
+	// Test SAMPLE ROW - should return exactly 10 rows
+	rows, err := db.Query("SELECT * FROM sample_test SAMPLE ROW (10)")
+	if err != nil {
+		t.Fatalf("SAMPLE ROW query failed: %v", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		count++
+	}
+
+	if count != 10 {
+		t.Errorf("Expected 10 rows from SAMPLE ROW, got %d", count)
+	}
+}
+
+func TestSequence(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create sequence
+	_, err := db.Exec("CREATE SEQUENCE my_seq START = 1 INCREMENT = 1")
+	if err != nil {
+		t.Fatalf("CREATE SEQUENCE failed: %v", err)
+	}
+
+	// Get first NEXTVAL
+	var val1 int64
+	err = db.QueryRow("SELECT my_seq.NEXTVAL").Scan(&val1)
+	if err != nil {
+		t.Fatalf("NEXTVAL query failed: %v", err)
+	}
+	if val1 != 1 {
+		t.Errorf("Expected NEXTVAL = 1, got %d", val1)
+	}
+
+	// Get second NEXTVAL
+	var val2 int64
+	err = db.QueryRow("SELECT my_seq.NEXTVAL").Scan(&val2)
+	if err != nil {
+		t.Fatalf("Second NEXTVAL query failed: %v", err)
+	}
+	if val2 != 2 {
+		t.Errorf("Expected NEXTVAL = 2, got %d", val2)
+	}
+
+	// Get CURRVAL
+	var currVal int64
+	err = db.QueryRow("SELECT my_seq.CURRVAL").Scan(&currVal)
+	if err != nil {
+		t.Fatalf("CURRVAL query failed: %v", err)
+	}
+	if currVal != 2 {
+		t.Errorf("Expected CURRVAL = 2, got %d", currVal)
+	}
+
+	// Drop sequence
+	_, err = db.Exec("DROP SEQUENCE my_seq")
+	if err != nil {
+		t.Fatalf("DROP SEQUENCE failed: %v", err)
+	}
+}
+
+func TestSequenceWithCustomStartIncrement(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create sequence with custom start and increment
+	_, err := db.Exec("CREATE SEQUENCE custom_seq START = 100 INCREMENT = 10")
+	if err != nil {
+		t.Fatalf("CREATE SEQUENCE failed: %v", err)
+	}
+
+	// Get first NEXTVAL
+	var val1 int64
+	err = db.QueryRow("SELECT custom_seq.NEXTVAL").Scan(&val1)
+	if err != nil {
+		t.Fatalf("NEXTVAL query failed: %v", err)
+	}
+	if val1 != 100 {
+		t.Errorf("Expected NEXTVAL = 100, got %d", val1)
+	}
+
+	// Get second NEXTVAL
+	var val2 int64
+	err = db.QueryRow("SELECT custom_seq.NEXTVAL").Scan(&val2)
+	if err != nil {
+		t.Fatalf("Second NEXTVAL query failed: %v", err)
+	}
+	if val2 != 110 {
+		t.Errorf("Expected NEXTVAL = 110, got %d", val2)
+	}
+
+	// Cleanup
+	_, _ = db.Exec("DROP SEQUENCE custom_seq")
 }
