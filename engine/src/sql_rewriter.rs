@@ -43,6 +43,9 @@ pub fn rewrite(sql: &str) -> String {
     // Rewrite SAMPLE/TABLESAMPLE
     result = rewrite_sample(&result);
 
+    // Rewrite RATIO_TO_REPORT
+    result = rewrite_ratio_to_report(&result);
+
     result
 }
 
@@ -736,6 +739,25 @@ fn rewrite_sample(sql: &str) -> String {
     sql.to_string()
 }
 
+/// Rewrite RATIO_TO_REPORT(expr) OVER (...) to expr / SUM(expr) OVER (...)
+///
+/// Snowflake's RATIO_TO_REPORT calculates the ratio of a value to the sum of all values
+/// in the partition.
+fn rewrite_ratio_to_report(sql: &str) -> String {
+    // Pattern: RATIO_TO_REPORT(expr) OVER (partition_clause)
+    // Replace with: (expr) / SUM(expr) OVER (partition_clause)
+    let pattern =
+        Regex::new(r"(?i)\bRATIO_TO_REPORT\s*\(\s*([^)]+)\s*\)\s*OVER\s*\(([^)]*)\)").unwrap();
+
+    pattern
+        .replace_all(sql, |caps: &regex::Captures| {
+            let expr = caps[1].trim();
+            let over_clause = caps[2].trim();
+            format!("(({expr}) * 1.0 / SUM({expr}) OVER ({over_clause}))")
+        })
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1037,5 +1059,20 @@ mod tests {
         let sql = "SELECT * FROM users";
         let rewritten = rewrite(sql);
         assert_eq!(rewritten, "SELECT * FROM users");
+    }
+
+    #[test]
+    fn test_ratio_to_report_basic() {
+        let sql =
+            "SELECT id, RATIO_TO_REPORT(amount) OVER (PARTITION BY region) as ratio FROM sales";
+        let rewritten = rewrite(sql);
+        assert!(rewritten.contains("((amount) * 1.0 / SUM(amount) OVER (PARTITION BY region))"));
+    }
+
+    #[test]
+    fn test_ratio_to_report_no_partition() {
+        let sql = "SELECT id, RATIO_TO_REPORT(value) OVER () as ratio FROM data";
+        let rewritten = rewrite(sql);
+        assert!(rewritten.contains("((value) * 1.0 / SUM(value) OVER ())"));
     }
 }
