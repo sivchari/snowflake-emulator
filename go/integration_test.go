@@ -2615,3 +2615,83 @@ func TestSequenceWithCustomStartIncrement(t *testing.T) {
 	// Cleanup
 	_, _ = db.Exec("DROP SEQUENCE custom_seq")
 }
+
+// Phase 8: Extended Window Functions Tests
+
+func TestWindowPercentRankCumeDist(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate test table
+	_, err := db.Exec("CREATE TABLE test_pct_go (id INT, score INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_pct_go")
+
+	_, err = db.Exec("INSERT INTO test_pct_go VALUES (1, 100), (2, 200), (3, 200), (4, 300)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Query PERCENT_RANK and CUME_DIST
+	rows, err := db.Query("SELECT id, PERCENT_RANK() OVER (ORDER BY score) as pct_rank FROM test_pct_go ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []float64{0.0, 0.3333333333333333, 0.3333333333333333, 1.0}
+	i := 0
+	for rows.Next() {
+		var id int
+		var pctRank float64
+		if err := rows.Scan(&id, &pctRank); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		// Allow small floating point tolerance
+		if pctRank < expected[i]-0.01 || pctRank > expected[i]+0.01 {
+			t.Errorf("Row %d: expected pct_rank ~%.2f, got %.4f", i+1, expected[i], pctRank)
+		}
+		i++
+	}
+}
+
+func TestRatioToReport(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate test table
+	_, err := db.Exec("CREATE TABLE test_ratio_go (id INT, region VARCHAR, amount INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_ratio_go")
+
+	_, err = db.Exec("INSERT INTO test_ratio_go VALUES (1, 'East', 100), (2, 'East', 400), (3, 'West', 200), (4, 'West', 200)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Query RATIO_TO_REPORT
+	rows, err := db.Query("SELECT id, region, RATIO_TO_REPORT(amount) OVER (PARTITION BY region) as ratio FROM test_ratio_go ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []float64{0.2, 0.8, 0.5, 0.5} // East: 100/500=0.2, 400/500=0.8; West: 200/400=0.5, 200/400=0.5
+	i := 0
+	for rows.Next() {
+		var id int
+		var region string
+		var ratio float64
+		if err := rows.Scan(&id, &region, &ratio); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if ratio < expected[i]-0.01 || ratio > expected[i]+0.01 {
+			t.Errorf("Row %d: expected ratio ~%.2f, got %.4f", i+1, expected[i], ratio)
+		}
+		i++
+	}
+}

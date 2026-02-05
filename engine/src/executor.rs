@@ -2360,4 +2360,73 @@ mod tests {
         let result = executor.execute("SELECT nonexistent.NEXTVAL").await;
         assert!(result.is_err());
     }
+
+    // ========================================================================
+    // Phase 8: Extended Window Functions Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_window_percent_rank_cume_dist() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE test_pct (id INT, score INT)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO test_pct VALUES (1, 100), (2, 200), (3, 200), (4, 300), (5, 400)")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, score, PERCENT_RANK() OVER (ORDER BY score) as pct_rank, CUME_DIST() OVER (ORDER BY score) as cume FROM test_pct ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 5);
+        let data = response.data.unwrap();
+        // score=100: percent_rank=0, cume_dist=0.2
+        assert_eq!(data[0][2], Some("0".to_string()));
+        // score=200: percent_rank=0.25 (1/4), cume_dist=0.6 (3/5)
+        // score=300: percent_rank=0.75 (3/4), cume_dist=0.8 (4/5)
+        assert_eq!(data[3][2], Some("0.75".to_string()));
+        // score=400: percent_rank=1, cume_dist=1
+        assert_eq!(data[4][2], Some("1".to_string()));
+        assert_eq!(data[4][3], Some("1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_ratio_to_report() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE test_ratio (id INT, region VARCHAR, amount INT)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO test_ratio VALUES (1, 'East', 100), (2, 'East', 200), (3, 'East', 200), (4, 'West', 300), (5, 'West', 100)")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, region, amount, RATIO_TO_REPORT(amount) OVER (PARTITION BY region) as ratio FROM test_ratio ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 5);
+        let data = response.data.unwrap();
+        // East total = 500: 100/500=0.2, 200/500=0.4, 200/500=0.4
+        assert_eq!(data[0][3], Some("0.2".to_string())); // id=1, 100/500
+        assert_eq!(data[1][3], Some("0.4".to_string())); // id=2, 200/500
+        assert_eq!(data[2][3], Some("0.4".to_string())); // id=3, 200/500
+                                                         // West total = 400: 300/400=0.75, 100/400=0.25
+        assert_eq!(data[3][3], Some("0.75".to_string())); // id=4, 300/400
+        assert_eq!(data[4][3], Some("0.25".to_string())); // id=5, 100/400
+    }
 }
