@@ -1,5 +1,5 @@
 [workspace]
-members = ["server", "cli", "playground", "engine"]
+members = ["server", "cli", "engine"]
 default-members = ["cli"]
 resolver = "2"
 
