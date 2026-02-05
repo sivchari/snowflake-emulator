@@ -45,6 +45,11 @@ impl Executor {
         // Date/Time functions
         ctx.register_udf(functions::dateadd());
         ctx.register_udf(functions::datediff());
+        ctx.register_udf(functions::to_date());
+        ctx.register_udf(functions::to_timestamp_udf());
+        ctx.register_udf(functions::last_day());
+        ctx.register_udf(functions::dayname());
+        ctx.register_udf(functions::monthname());
 
         // TRY_* functions
         ctx.register_udf(functions::try_parse_json());
@@ -107,6 +112,21 @@ impl Executor {
         ctx.register_udaf(functions::array_agg());
         ctx.register_udaf(functions::object_agg());
         ctx.register_udaf(functions::listagg());
+
+        // Numeric functions
+        ctx.register_udf(functions::div0());
+        ctx.register_udf(functions::div0null());
+
+        // Hash functions
+        ctx.register_udf(functions::sha1_hex());
+        ctx.register_udf(functions::sha2());
+
+        // Context functions
+        ctx.register_udf(functions::current_user());
+        ctx.register_udf(functions::current_role());
+        ctx.register_udf(functions::current_database());
+        ctx.register_udf(functions::current_schema());
+        ctx.register_udf(functions::current_warehouse());
 
         // Register _NUMBERS table for FLATTEN support (0-999)
         let numbers_schema = Arc::new(Schema::new(vec![Field::new("idx", DataType::Int64, false)]));

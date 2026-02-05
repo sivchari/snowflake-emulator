@@ -80,10 +80,13 @@
 mod aggregate;
 mod array;
 mod conditional;
+mod context;
 mod datetime;
 mod flatten;
+mod hash;
 mod helpers;
 mod json;
+mod numeric;
 mod object;
 mod string;
 mod try_functions;
@@ -96,7 +99,7 @@ pub use conditional::{iff, nvl, nvl2};
 pub use json::{parse_json, to_json};
 
 // Date/Time functions
-pub use datetime::{dateadd, datediff};
+pub use datetime::{dateadd, datediff, dayname, last_day, monthname, to_date, to_timestamp_udf};
 
 // TRY_* functions
 pub use try_functions::{try_parse_json, try_to_boolean, try_to_date, try_to_number};
@@ -129,3 +132,14 @@ pub use string::{
 
 // Aggregate functions
 pub use aggregate::{array_agg, listagg, object_agg};
+
+// Numeric functions
+pub use numeric::{div0, div0null};
+
+// Hash functions
+pub use hash::{sha1_hex, sha2};
+
+// Context functions
+pub use context::{
+    current_database, current_role, current_schema, current_user, current_warehouse,
+};
