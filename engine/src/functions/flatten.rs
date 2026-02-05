@@ -106,7 +106,7 @@ impl ScalarUDFImpl for FlattenArrayFunc {
                         )
                     })?;
 
-                let idx = idx_opt.and_then(|i| safe_index(i));
+                let idx = idx_opt.and_then(safe_index);
                 let result: StringArray = if let Some(idx) = idx {
                     str_arr
                         .iter()

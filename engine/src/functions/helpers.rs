@@ -56,8 +56,7 @@ where
                 Ok(ColumnarValue::Array(Arc::new(result)))
             } else {
                 Err(datafusion::error::DataFusionError::Execution(format!(
-                    "{} argument must be a string",
-                    func_name
+                    "{func_name} argument must be a string"
                 )))
             }
         }
@@ -120,8 +119,7 @@ where
                 Ok(ColumnarValue::Array(Arc::new(result)))
             } else {
                 Err(datafusion::error::DataFusionError::Execution(format!(
-                    "{} argument must be a string",
-                    func_name
+                    "{func_name} argument must be a string"
                 )))
             }
         }
@@ -204,6 +202,7 @@ pub fn safe_index(index: i64) -> Option<usize> {
 }
 
 /// Safely convert an i32 index to usize, returning None for negative values.
+#[allow(dead_code)]
 pub fn safe_index_i32(index: i32) -> Option<usize> {
     if index >= 0 {
         Some(index as usize)

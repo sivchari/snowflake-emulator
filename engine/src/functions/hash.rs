@@ -264,8 +264,7 @@ fn compute_sha2(s: &str, bit_length: i32) -> Result<String> {
             Ok(hex::encode(hasher.finalize()))
         }
         _ => Err(datafusion::error::DataFusionError::Execution(format!(
-            "SHA2 bit_length must be 224, 256, 384, or 512, got {}",
-            bit_length
+            "SHA2 bit_length must be 224, 256, 384, or 512, got {bit_length}"
         ))),
     }
 }

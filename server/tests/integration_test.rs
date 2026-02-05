@@ -183,7 +183,7 @@ async fn test_sql_error_handling() {
     let (status, json) = execute_sql(&app, "SELEC invalid syntax").await;
 
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(json["message"].as_str().unwrap().len() > 0);
+    assert!(!json["message"].as_str().unwrap().is_empty());
     assert!(json["code"].is_string());
     assert!(json["sqlState"].is_string());
 }

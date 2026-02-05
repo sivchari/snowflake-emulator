@@ -75,15 +75,13 @@ impl ScalarUDFImpl for ParseJsonFunc {
                         // Return compact JSON
                         let json_str = serde_json::to_string(&v).map_err(|e| {
                             datafusion::error::DataFusionError::Execution(format!(
-                                "JSON serialization error: {}",
-                                e
+                                "JSON serialization error: {e}"
                             ))
                         })?;
                         Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(json_str))))
                     }
                     Err(e) => Err(datafusion::error::DataFusionError::Execution(format!(
-                        "Invalid JSON: {}",
-                        e
+                        "Invalid JSON: {e}"
                     ))),
                 }
             }
@@ -188,7 +186,7 @@ impl ScalarUDFImpl for ToJsonFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
+    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
         if args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TO_JSON requires exactly 1 argument".to_string(),
@@ -246,12 +244,12 @@ fn scalar_to_json(scalar: &ScalarValue) -> Result<Option<String>> {
         }
         _ => {
             // For other types, convert to string
-            serde_json::Value::String(format!("{}", scalar))
+            serde_json::Value::String(format!("{scalar}"))
         }
     };
 
     let json_str = serde_json::to_string(&json_value).map_err(|e| {
-        datafusion::error::DataFusionError::Execution(format!("JSON serialization error: {}", e))
+        datafusion::error::DataFusionError::Execution(format!("JSON serialization error: {e}"))
     })?;
 
     Ok(Some(json_str))

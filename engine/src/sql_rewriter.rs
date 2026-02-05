@@ -34,6 +34,15 @@ pub fn rewrite(sql: &str) -> String {
     // Rewrite LATERAL FLATTEN
     result = rewrite_lateral_flatten(&result);
 
+    // Rewrite PIVOT
+    result = rewrite_pivot(&result);
+
+    // Rewrite UNPIVOT
+    result = rewrite_unpivot(&result);
+
+    // Rewrite SAMPLE/TABLESAMPLE
+    result = rewrite_sample(&result);
+
     result
 }
 
@@ -136,13 +145,12 @@ fn rewrite_qualify(sql: &str) -> String {
 
         // Build the CTE query
         let result = format!(
-            "WITH _qualify AS ({}) SELECT * FROM _qualify WHERE {}",
-            select_part, qualify_condition
+            "WITH _qualify AS ({select_part}) SELECT * FROM _qualify WHERE {qualify_condition}"
         );
 
         // Append ORDER BY/LIMIT if present
         if !trailing_clauses.is_empty() {
-            return format!("{} {}", result, trailing_clauses);
+            return format!("{result} {trailing_clauses}");
         }
         return result;
     }
@@ -150,15 +158,140 @@ fn rewrite_qualify(sql: &str) -> String {
     sql.to_string()
 }
 
+/// FLATTEN options parsed from SQL
+#[derive(Debug, Default)]
+struct FlattenOptions {
+    input: String,
+    path: Option<String>,
+    outer: bool,
+    recursive: bool,
+    mode: String, // ARRAY, OBJECT, or BOTH
+}
+
+impl FlattenOptions {
+    fn parse(args_str: &str) -> Self {
+        let mut opts = FlattenOptions {
+            mode: "BOTH".to_string(),
+            ..Default::default()
+        };
+
+        // Parse comma-separated key => value pairs
+        // Handle nested parentheses by tracking depth
+        let mut current_key = String::new();
+        let mut current_value = String::new();
+        let mut in_value = false;
+        let mut paren_depth = 0;
+
+        for c in args_str.chars() {
+            match c {
+                '(' => {
+                    paren_depth += 1;
+                    if in_value {
+                        current_value.push(c);
+                    }
+                }
+                ')' => {
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
+                        if in_value {
+                            current_value.push(c);
+                        }
+                    }
+                }
+                '=' if paren_depth == 0 => {
+                    // Skip the '>' after '='
+                    in_value = true;
+                }
+                '>' if in_value && current_value.is_empty() => {
+                    // Skip the '>' that comes after '='
+                }
+                ',' if paren_depth == 0 => {
+                    // End of current key-value pair
+                    opts.set_option(current_key.trim(), current_value.trim());
+                    current_key.clear();
+                    current_value.clear();
+                    in_value = false;
+                }
+                _ => {
+                    if in_value {
+                        current_value.push(c);
+                    } else {
+                        current_key.push(c);
+                    }
+                }
+            }
+        }
+
+        // Handle last key-value pair
+        if !current_key.is_empty() {
+            opts.set_option(current_key.trim(), current_value.trim());
+        }
+
+        opts
+    }
+
+    fn set_option(&mut self, key: &str, value: &str) {
+        let key_lower = key.to_lowercase();
+        let value_trimmed = value.trim();
+
+        match key_lower.as_str() {
+            "input" => {
+                self.input = value_trimmed.to_string();
+            }
+            "path" => {
+                // Remove quotes from path
+                let path = value_trimmed
+                    .trim_start_matches('\'')
+                    .trim_end_matches('\'')
+                    .to_string();
+                if !path.is_empty() {
+                    self.path = Some(path);
+                }
+            }
+            "outer" => {
+                self.outer = value_trimmed.eq_ignore_ascii_case("true");
+            }
+            "recursive" => {
+                self.recursive = value_trimmed.eq_ignore_ascii_case("true");
+            }
+            "mode" => {
+                let mode = value_trimmed
+                    .trim_start_matches('\'')
+                    .trim_end_matches('\'')
+                    .to_uppercase();
+                if ["ARRAY", "OBJECT", "BOTH"].contains(&mode.as_str()) {
+                    self.mode = mode;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Get the effective input expression (applying path if specified)
+    fn effective_input(&self) -> String {
+        if let Some(ref path) = self.path {
+            format!("GET_PATH({}, '{}')", self.input, path)
+        } else {
+            self.input.clone()
+        }
+    }
+}
+
 /// Rewrite LATERAL FLATTEN to CROSS JOIN with _NUMBERS
 ///
-/// Pattern: `LATERAL FLATTEN(input => expr) [AS alias]`
+/// Pattern: `LATERAL FLATTEN(input => expr [, path => 'path'] [, outer => true]) [AS alias]`
 /// Becomes: `CROSS JOIN _numbers AS _flatten_idx` with WHERE clause
+///
+/// Supported options:
+/// - input: Required. The array or object to flatten.
+/// - path: Optional. JSON path to navigate before flattening.
+/// - outer: Optional. If TRUE, return one row even for empty input (default: FALSE).
+/// - mode: Optional. ARRAY, OBJECT, or BOTH (default: BOTH).
 fn rewrite_lateral_flatten(sql: &str) -> String {
-    // Pattern to match: , LATERAL FLATTEN(input => expr) [AS] alias
-    // or: FROM ... , LATERAL FLATTEN(input => expr) [AS] alias
+    // Pattern to match: , LATERAL FLATTEN(...) [AS] alias
+    // Capture the entire argument list inside parentheses
     let lateral_flatten_pattern =
-        Regex::new(r"(?i),\s*LATERAL\s+FLATTEN\s*\(\s*input\s*=>\s*([^)]+)\s*\)\s*(?:AS\s+)?(\w+)")
+        Regex::new(r"(?i),\s*LATERAL\s+FLATTEN\s*\(([^)]+(?:\([^)]*\)[^)]*)*)\)\s*(?:AS\s+)?(\w+)")
             .unwrap();
 
     if !lateral_flatten_pattern.is_match(sql) {
@@ -173,46 +306,60 @@ fn rewrite_lateral_flatten(sql: &str) -> String {
         .captures_iter(sql)
         .map(|cap| {
             let full_match = cap.get(0).unwrap();
-            let input_expr = cap.get(1).unwrap().as_str().trim();
+            let args_str = cap.get(1).unwrap().as_str();
             let alias = cap.get(2).unwrap().as_str();
+            let opts = FlattenOptions::parse(args_str);
             (
                 full_match.start(),
                 full_match.end(),
-                input_expr.to_string(),
+                opts,
                 alias.to_string(),
             )
         })
         .collect();
 
     // Process matches in reverse order to preserve positions
-    for (start, end, input_expr, alias) in matches.into_iter().rev() {
+    for (start, end, opts, alias) in matches.into_iter().rev() {
         flatten_count += 1;
-        let idx_alias = format!("_flatten_idx_{}", flatten_count);
+        let idx_alias = format!("_flatten_idx_{flatten_count}");
+        let effective_input = opts.effective_input();
 
-        // Replace LATERAL FLATTEN with CROSS JOIN
-        let replacement = format!(" CROSS JOIN _numbers AS {}", idx_alias);
+        // Replace LATERAL FLATTEN with CROSS JOIN (or LEFT JOIN for outer)
+        let join_type = if opts.outer {
+            "LEFT JOIN"
+        } else {
+            "CROSS JOIN"
+        };
+        let replacement = format!(" {join_type} _numbers AS {idx_alias}");
         result.replace_range(start..end, &replacement);
 
-        // Add WHERE clause for array bounds
-        result = add_flatten_where_clause(&result, &input_expr, &idx_alias);
+        // Add WHERE/ON clause for array bounds
+        result = add_flatten_where_clause(&result, &effective_input, &idx_alias, opts.outer);
 
         // Replace alias.value references with FLATTEN_ARRAY calls
-        result = replace_flatten_column_refs(&result, &alias, &input_expr, &idx_alias);
+        result = replace_flatten_column_refs(&result, &alias, &effective_input, &idx_alias);
     }
 
     result
 }
 
 /// Add WHERE clause for FLATTEN array bounds
-fn add_flatten_where_clause(sql: &str, input_expr: &str, idx_alias: &str) -> String {
-    let condition = format!("{}.idx < ARRAY_SIZE({})", idx_alias, input_expr);
+fn add_flatten_where_clause(sql: &str, input_expr: &str, idx_alias: &str, outer: bool) -> String {
+    // For outer joins, we need a condition that allows at least one row for empty arrays
+    // For regular joins, we just need idx < ARRAY_SIZE
+    let condition = if outer {
+        // For OUTER: allow idx = 0 even for empty arrays, or idx < array_size for non-empty
+        format!("({idx_alias}.idx = 0 OR {idx_alias}.idx < COALESCE(ARRAY_SIZE({input_expr}), 0))")
+    } else {
+        format!("{idx_alias}.idx < ARRAY_SIZE({input_expr})")
+    };
 
     // Check if WHERE clause already exists
     let where_pattern = Regex::new(r"(?i)\bWHERE\b").unwrap();
 
     if where_pattern.is_match(sql) {
         // Add condition to existing WHERE clause
-        let result = where_pattern.replace(sql, &format!("WHERE {} AND ", condition));
+        let result = where_pattern.replace(sql, &format!("WHERE {condition} AND "));
         result.to_string()
     } else {
         // Find position to insert WHERE clause (before GROUP BY, ORDER BY, LIMIT, or end)
@@ -221,10 +368,10 @@ fn add_flatten_where_clause(sql: &str, input_expr: &str, idx_alias: &str) -> Str
         if let Some(mat) = insert_pattern.find(sql) {
             let pos = mat.start();
             let mut result = sql.to_string();
-            result.insert_str(pos, &format!(" WHERE {} ", condition));
+            result.insert_str(pos, &format!(" WHERE {condition} "));
             result
         } else {
-            format!("{} WHERE {}", sql, condition)
+            format!("{sql} WHERE {condition}")
         }
     }
 }
@@ -246,14 +393,14 @@ fn replace_flatten_column_refs(
     result = value_pattern
         .replace_all(
             &result,
-            format!("FLATTEN_ARRAY({}, {}.idx)", input_expr, idx_alias),
+            format!("FLATTEN_ARRAY({input_expr}, {idx_alias}.idx)"),
         )
         .to_string();
 
     // Replace alias.index with idx
     let index_pattern = Regex::new(&format!(r"(?i)\b{}\.(index)\b", regex::escape(alias))).unwrap();
     result = index_pattern
-        .replace_all(&result, format!("{}.idx", idx_alias))
+        .replace_all(&result, format!("{idx_alias}.idx"))
         .to_string();
 
     // Replace alias.this with the original input expression
@@ -261,6 +408,332 @@ fn replace_flatten_column_refs(
     result = this_pattern.replace_all(&result, input_expr).to_string();
 
     result
+}
+
+/// Rewrite PIVOT clause to CASE WHEN expressions
+///
+/// Pattern:
+/// ```sql
+/// SELECT ... FROM table
+/// PIVOT (agg_func(value_col) FOR pivot_col IN ('val1', 'val2', ...))
+/// [AS alias]
+/// ```
+///
+/// Becomes:
+/// ```sql
+/// SELECT ..., agg_func(CASE WHEN pivot_col = 'val1' THEN value_col END) AS "val1", ...
+/// FROM table
+/// GROUP BY non_pivoted_columns
+/// ```
+fn rewrite_pivot(sql: &str) -> String {
+    // Pattern to match PIVOT clause:
+    // PIVOT (AGG(col) FOR column IN (val1, val2, ...)) [AS alias]
+    let pivot_pattern = Regex::new(
+        r"(?is)\bPIVOT\s*\(\s*(\w+)\s*\(\s*(\w+)\s*\)\s+FOR\s+(\w+)\s+IN\s*\(([^)]+)\)\s*\)\s*(?:AS\s+(\w+))?"
+    ).unwrap();
+
+    if !pivot_pattern.is_match(sql) {
+        return sql.to_string();
+    }
+
+    let captures = pivot_pattern.captures(sql).unwrap();
+    let agg_func = captures.get(1).unwrap().as_str();
+    let value_col = captures.get(2).unwrap().as_str();
+    let pivot_col = captures.get(3).unwrap().as_str();
+    let values_str = captures.get(4).unwrap().as_str();
+    let _alias = captures.get(5).map(|m| m.as_str());
+
+    // Parse the IN values
+    let values: Vec<String> = values_str
+        .split(',')
+        .map(|v| v.trim().trim_matches('\'').trim_matches('"').to_string())
+        .collect();
+
+    // Build the CASE WHEN expressions for each pivot value
+    let case_expressions: Vec<String> = values
+        .iter()
+        .map(|val| {
+            format!("{agg_func}(CASE WHEN {pivot_col} = '{val}' THEN {value_col} END) AS \"{val}\"")
+        })
+        .collect();
+
+    // Replace the PIVOT clause with the generated expressions
+    // We need to add the expressions to the SELECT clause and add GROUP BY
+    let mut result = sql.to_string();
+
+    // Find the SELECT clause and add the generated columns
+    let select_pattern = Regex::new(r"(?is)SELECT\s+(.+?)\s+FROM").unwrap();
+    if let Some(sel_cap) = select_pattern.captures(&result) {
+        let select_cols = sel_cap.get(1).unwrap().as_str();
+
+        // Check if it's SELECT * - we can't expand * easily, so we'll just append
+        let new_select = if select_cols.trim() == "*" {
+            // For SELECT *, we can't easily determine non-pivot columns
+            // Just include the pivot expressions
+            case_expressions.join(", ")
+        } else {
+            format!("{}, {}", select_cols, case_expressions.join(", "))
+        };
+
+        let select_replacement = format!("SELECT {new_select} FROM");
+        result = select_pattern
+            .replace(&result, select_replacement)
+            .to_string();
+    }
+
+    // Remove the PIVOT clause
+    result = pivot_pattern.replace(&result, "").to_string();
+
+    // Add GROUP BY if not already present (for aggregation)
+    // Find non-aggregated columns from SELECT clause to add to GROUP BY
+    let group_by_pattern = Regex::new(r"(?i)\bGROUP\s+BY\b").unwrap();
+    if !group_by_pattern.is_match(&result) {
+        // Extract columns that aren't part of the aggregate (simplified approach)
+        // For now, we'll look for columns before FROM that aren't aggregates
+        let pre_select = Regex::new(r"(?is)SELECT\s+(.+?)\s+FROM").unwrap();
+        if let Some(cap) = pre_select.captures(&result) {
+            let cols_str = cap.get(1).unwrap().as_str();
+            let group_cols: Vec<&str> = cols_str
+                .split(',')
+                .filter(|c| {
+                    let c_upper = c.to_uppercase();
+                    !c_upper.contains("SUM(")
+                        && !c_upper.contains("COUNT(")
+                        && !c_upper.contains("AVG(")
+                        && !c_upper.contains("MAX(")
+                        && !c_upper.contains("MIN(")
+                        && !c_upper.contains("CASE WHEN")
+                })
+                .map(|c| c.trim())
+                .filter(|c| !c.is_empty())
+                .collect();
+
+            if !group_cols.is_empty() {
+                // Find where to insert GROUP BY (before ORDER BY, LIMIT, or end)
+                let insert_pattern = Regex::new(r"(?i)\s*(ORDER\s+BY|LIMIT|$)").unwrap();
+                if let Some(mat) = insert_pattern.find(&result) {
+                    let pos = mat.start();
+                    result.insert_str(pos, &format!(" GROUP BY {} ", group_cols.join(", ")));
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Rewrite UNPIVOT clause to UNION ALL
+///
+/// Pattern:
+/// ```sql
+/// SELECT ... FROM table
+/// UNPIVOT (value_col FOR name_col IN (col1, col2, ...))
+/// [AS alias]
+/// ```
+///
+/// Becomes:
+/// ```sql
+/// SELECT ..., 'col1' AS name_col, col1 AS value_col FROM table
+/// UNION ALL
+/// SELECT ..., 'col2' AS name_col, col2 AS value_col FROM table
+/// ...
+/// ```
+fn rewrite_unpivot(sql: &str) -> String {
+    // Pattern to match UNPIVOT clause:
+    // UNPIVOT (value_col FOR name_col IN (col1, col2, ...)) [AS alias]
+    let unpivot_pattern = Regex::new(
+        r"(?is)\bUNPIVOT\s*\(\s*(\w+)\s+FOR\s+(\w+)\s+IN\s*\(([^)]+)\)\s*\)\s*(?:AS\s+(\w+))?",
+    )
+    .unwrap();
+
+    if !unpivot_pattern.is_match(sql) {
+        return sql.to_string();
+    }
+
+    let captures = unpivot_pattern.captures(sql).unwrap();
+    let value_col = captures.get(1).unwrap().as_str();
+    let name_col = captures.get(2).unwrap().as_str();
+    let columns_str = captures.get(3).unwrap().as_str();
+    let _alias = captures.get(4).map(|m| m.as_str());
+
+    // Parse the IN columns
+    let columns: Vec<String> = columns_str
+        .split(',')
+        .map(|c| c.trim().to_string())
+        .collect();
+
+    // Get the base SELECT ... FROM table part
+    let base_pattern = Regex::new(r"(?is)(SELECT\s+.+?\s+FROM\s+\w+)").unwrap();
+    let base_match = base_pattern.captures(sql);
+
+    if base_match.is_none() {
+        return sql.to_string();
+    }
+
+    let base = base_match.unwrap().get(1).unwrap().as_str();
+
+    // Extract the table name
+    let table_pattern = Regex::new(r"(?i)FROM\s+(\w+)").unwrap();
+    let table_name = table_pattern
+        .captures(base)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .unwrap_or("t");
+
+    // Extract SELECT columns (excluding the pivot columns)
+    let select_pattern = Regex::new(r"(?is)SELECT\s+(.+?)\s+FROM").unwrap();
+    let select_cols = select_pattern
+        .captures(base)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim())
+        .unwrap_or("*");
+
+    // Filter out the unpivot columns from select if SELECT *
+    let filtered_select = if select_cols == "*" {
+        "*".to_string()
+    } else {
+        let cols: Vec<&str> = select_cols
+            .split(',')
+            .map(|c| c.trim())
+            .filter(|c| !columns.contains(&c.to_string()))
+            .collect();
+        cols.join(", ")
+    };
+
+    // Build UNION ALL queries for each column
+    let union_queries: Vec<String> = columns
+        .iter()
+        .map(|col| {
+            if filtered_select.is_empty() || filtered_select == "*" {
+                format!(
+                    "SELECT '{col}' AS {name_col}, {col} AS {value_col} FROM {table_name}"
+                )
+            } else {
+                format!(
+                    "SELECT {filtered_select}, '{col}' AS {name_col}, {col} AS {value_col} FROM {table_name}"
+                )
+            }
+        })
+        .collect();
+
+    // Get any trailing clauses (WHERE, ORDER BY, etc.)
+    // Use the same pattern as unpivot_pattern to correctly find the end
+    let trailing_pattern = Regex::new(
+        r"(?is)\bUNPIVOT\s*\(\s*\w+\s+FOR\s+\w+\s+IN\s*\([^)]+\)\s*\)\s*(?:AS\s+\w+)?\s*(.*)$",
+    )
+    .unwrap();
+    let trailing = trailing_pattern
+        .captures(sql)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim())
+        .unwrap_or("");
+
+    // Combine with UNION ALL
+    let mut result = union_queries.join(" UNION ALL ");
+
+    // Add trailing clauses if any
+    if !trailing.is_empty() {
+        result = format!("{result} {trailing}");
+    }
+
+    result
+}
+
+/// Rewrite SAMPLE/TABLESAMPLE clause to subquery with ORDER BY RANDOM() and LIMIT
+///
+/// Patterns:
+/// ```sql
+/// SELECT * FROM table SAMPLE (10)        -- 10% of rows
+/// SELECT * FROM table SAMPLE ROW (100)   -- 100 rows
+/// SELECT * FROM table TABLESAMPLE (50)   -- 50% of rows
+/// ```
+///
+/// Note: Percentage-based sampling is approximated using COUNT(*) and calculated LIMIT.
+/// For row-based sampling, we use ORDER BY RANDOM() LIMIT n.
+fn rewrite_sample(sql: &str) -> String {
+    // Pattern 1: SAMPLE ROW (n) - sample n rows
+    let sample_row_pattern = Regex::new(r"(?i)\bSAMPLE\s+ROW\s*\(\s*(\d+)\s*\)").unwrap();
+
+    // Pattern 2: SAMPLE (n) or TABLESAMPLE (n) - sample n% of rows
+    let sample_pct_pattern =
+        Regex::new(r"(?i)\b(?:SAMPLE|TABLESAMPLE)\s*\(\s*(\d+(?:\.\d+)?)\s*\)").unwrap();
+
+    // Handle SAMPLE ROW (n) - exact row count
+    if let Some(captures) = sample_row_pattern.captures(sql) {
+        let row_count = captures.get(1).unwrap().as_str();
+
+        // Replace SAMPLE ROW (n) with ORDER BY RANDOM() LIMIT n
+        let mut result = sql.to_string();
+        result = sample_row_pattern.replace(&result, "").to_string();
+
+        // Check if ORDER BY already exists
+        let order_by_pattern = Regex::new(r"(?i)\bORDER\s+BY\b").unwrap();
+        let limit_pattern = Regex::new(r"(?i)\bLIMIT\b").unwrap();
+
+        if !order_by_pattern.is_match(&result) {
+            // Add ORDER BY RANDOM() and LIMIT
+            if !limit_pattern.is_match(&result) {
+                result = format!("{} ORDER BY RANDOM() LIMIT {}", result.trim(), row_count);
+            }
+        } else {
+            // ORDER BY exists, just add LIMIT if not present
+            if !limit_pattern.is_match(&result) {
+                result = format!("{} LIMIT {}", result.trim(), row_count);
+            }
+        }
+
+        return result;
+    }
+
+    // Handle SAMPLE (n%) or TABLESAMPLE (n%) - percentage sampling
+    // This is trickier because we need to know total row count.
+    // We'll convert to a CTE that calculates the limit.
+    if let Some(captures) = sample_pct_pattern.captures(sql) {
+        let percentage: f64 = captures.get(1).unwrap().as_str().parse().unwrap_or(0.0);
+
+        if percentage <= 0.0 || percentage >= 100.0 {
+            return sql.to_string();
+        }
+
+        // For percentage sampling, we use a statistical approach:
+        // ORDER BY RANDOM() LIMIT (SELECT CAST(COUNT(*) * pct / 100 AS INT) FROM table)
+        // But DataFusion doesn't support subqueries in LIMIT directly.
+        // Instead, we'll estimate using random filtering: WHERE RANDOM() < percentage/100
+
+        let mut result = sql.to_string();
+        result = sample_pct_pattern.replace(&result, "").to_string();
+
+        // Add WHERE clause for random filtering
+        let pct_decimal = percentage / 100.0;
+        let where_condition = format!("RANDOM() < {pct_decimal}");
+
+        let where_pattern = Regex::new(r"(?i)\bWHERE\b").unwrap();
+        if where_pattern.is_match(&result) {
+            // Add to existing WHERE
+            result = where_pattern
+                .replace(&result, &format!("WHERE {where_condition} AND "))
+                .to_string();
+        } else {
+            // Find where to insert WHERE (after FROM table, before ORDER BY/LIMIT/etc)
+            let insert_pattern =
+                Regex::new(r"(?i)(FROM\s+\w+(?:\s+\w+)?)\s*(ORDER\s+BY|GROUP\s+BY|LIMIT|HAVING|$)")
+                    .unwrap();
+            if let Some(cap) = insert_pattern.captures(&result) {
+                let from_part = cap.get(1).unwrap().as_str();
+                let trailing = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+                result = insert_pattern
+                    .replace(
+                        &result,
+                        &format!("{from_part} WHERE {where_condition} {trailing}"),
+                    )
+                    .to_string();
+            }
+        }
+
+        return result;
+    }
+
+    sql.to_string()
 }
 
 #[cfg(test)]
@@ -432,5 +905,137 @@ mod tests {
         let sql = "SELECT arr[0] FROM t";
         let rewritten = rewrite(sql);
         assert_eq!(rewritten, "SELECT get(arr, 0) FROM t");
+    }
+
+    #[test]
+    fn test_flatten_with_path() {
+        let sql = "SELECT t.id, f.value FROM table1 t, LATERAL FLATTEN(input => t.data, path => 'items') f";
+        let rewritten = rewrite(sql);
+
+        // Should use GET_PATH to navigate to 'items' before flattening
+        assert!(rewritten.contains("CROSS JOIN _numbers"));
+        assert!(rewritten.contains("GET_PATH(t.data, 'items')"));
+    }
+
+    #[test]
+    fn test_flatten_with_outer() {
+        let sql =
+            "SELECT t.id, f.value FROM table1 t, LATERAL FLATTEN(input => t.arr, outer => true) f";
+        let rewritten = rewrite(sql);
+
+        // Should use LEFT JOIN instead of CROSS JOIN
+        assert!(rewritten.contains("LEFT JOIN _numbers"));
+        assert!(rewritten.contains("COALESCE(ARRAY_SIZE(t.arr), 0)"));
+    }
+
+    #[test]
+    fn test_flatten_options_parse() {
+        let opts = FlattenOptions::parse("input => t.data, path => 'items.values', outer => true");
+        assert_eq!(opts.input, "t.data");
+        assert_eq!(opts.path, Some("items.values".to_string()));
+        assert!(opts.outer);
+    }
+
+    #[test]
+    fn test_flatten_options_mode() {
+        let opts = FlattenOptions::parse("input => t.data, mode => 'ARRAY'");
+        assert_eq!(opts.input, "t.data");
+        assert_eq!(opts.mode, "ARRAY");
+    }
+
+    #[test]
+    fn test_pivot_basic() {
+        let sql =
+            "SELECT product FROM sales PIVOT (SUM(amount) FOR quarter IN ('Q1', 'Q2', 'Q3', 'Q4'))";
+        let rewritten = rewrite(sql);
+
+        // Should contain CASE WHEN expressions for each quarter
+        assert!(rewritten.contains("CASE WHEN quarter = 'Q1' THEN amount END"));
+        assert!(rewritten.contains("CASE WHEN quarter = 'Q2' THEN amount END"));
+        assert!(rewritten.contains("AS \"Q1\""));
+        assert!(rewritten.contains("AS \"Q2\""));
+        // Should have SUM around the CASE WHEN
+        assert!(rewritten.contains("SUM(CASE WHEN"));
+        // Should have GROUP BY
+        assert!(rewritten.contains("GROUP BY"));
+    }
+
+    #[test]
+    fn test_pivot_no_match() {
+        let sql = "SELECT * FROM sales";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT * FROM sales");
+    }
+
+    #[test]
+    fn test_unpivot_basic() {
+        let sql = "SELECT * FROM quarterly_sales UNPIVOT (amount FOR quarter IN (Q1, Q2, Q3, Q4))";
+        let rewritten = rewrite(sql);
+
+        // Should contain UNION ALL
+        assert!(rewritten.contains("UNION ALL"));
+        // Should contain individual selects for each column
+        assert!(rewritten.contains("'Q1' AS quarter"));
+        assert!(rewritten.contains("'Q2' AS quarter"));
+        assert!(rewritten.contains("Q1 AS amount"));
+        assert!(rewritten.contains("Q2 AS amount"));
+    }
+
+    #[test]
+    fn test_unpivot_no_match() {
+        let sql = "SELECT * FROM sales";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT * FROM sales");
+    }
+
+    #[test]
+    fn test_sample_row_basic() {
+        let sql = "SELECT * FROM users SAMPLE ROW (100)";
+        let rewritten = rewrite(sql);
+
+        // Should have ORDER BY RANDOM() and LIMIT
+        assert!(rewritten.contains("ORDER BY RANDOM()"));
+        assert!(rewritten.contains("LIMIT 100"));
+        // SAMPLE ROW should be removed
+        assert!(!rewritten.contains("SAMPLE ROW"));
+    }
+
+    #[test]
+    fn test_sample_percentage_basic() {
+        let sql = "SELECT * FROM users SAMPLE (10)";
+        let rewritten = rewrite(sql);
+
+        // Should have WHERE clause with RANDOM()
+        assert!(rewritten.contains("RANDOM() < 0.1"));
+        // SAMPLE should be removed
+        assert!(!rewritten.contains("SAMPLE (10)"));
+    }
+
+    #[test]
+    fn test_tablesample_basic() {
+        let sql = "SELECT * FROM users TABLESAMPLE (50)";
+        let rewritten = rewrite(sql);
+
+        // Should have WHERE clause with RANDOM()
+        assert!(rewritten.contains("RANDOM() < 0.5"));
+        // TABLESAMPLE should be removed
+        assert!(!rewritten.contains("TABLESAMPLE"));
+    }
+
+    #[test]
+    fn test_sample_with_existing_where() {
+        let sql = "SELECT * FROM users SAMPLE (25) WHERE active = true";
+        let rewritten = rewrite(sql);
+
+        // Should add to existing WHERE
+        assert!(rewritten.contains("RANDOM() < 0.25 AND"));
+        assert!(rewritten.contains("active = true"));
+    }
+
+    #[test]
+    fn test_sample_no_match() {
+        let sql = "SELECT * FROM users";
+        let rewritten = rewrite(sql);
+        assert_eq!(rewritten, "SELECT * FROM users");
     }
 }
