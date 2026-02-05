@@ -823,4 +823,71 @@ mod tests {
         assert_eq!(data[1][0], Some("3".to_string()));
         assert_eq!(data[1][1], Some("B".to_string()));
     }
+
+    #[tokio::test]
+    async fn test_drop_table() {
+        let executor = Executor::new();
+
+        // Create table
+        executor
+            .execute("CREATE TABLE drop_test (id INT, value INT)")
+            .await
+            .unwrap();
+
+        // Insert data
+        executor
+            .execute("INSERT INTO drop_test VALUES (1, 100)")
+            .await
+            .unwrap();
+
+        // Drop table
+        executor.execute("DROP TABLE drop_test").await.unwrap();
+
+        // Verify table no longer exists (query should fail)
+        let result = executor.execute("SELECT * FROM drop_test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_drop_view() {
+        let executor = Executor::new();
+
+        // Create base table
+        executor
+            .execute("CREATE TABLE view_base (id INT, value INT)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO view_base VALUES (1, 10), (2, 20), (3, 30)")
+            .await
+            .unwrap();
+
+        // Create view
+        executor
+            .execute("CREATE VIEW test_view AS SELECT id, value * 2 as doubled FROM view_base WHERE value > 10")
+            .await
+            .unwrap();
+
+        // Query view
+        let response = executor
+            .execute("SELECT * FROM test_view ORDER BY id")
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("2".to_string()));
+        assert_eq!(data[0][1], Some("40".to_string()));
+        assert_eq!(data[1][0], Some("3".to_string()));
+        assert_eq!(data[1][1], Some("60".to_string()));
+
+        // Drop view
+        executor.execute("DROP VIEW test_view").await.unwrap();
+
+        // Verify view no longer exists
+        let result = executor.execute("SELECT * FROM test_view").await;
+        assert!(result.is_err());
+    }
+
 }
