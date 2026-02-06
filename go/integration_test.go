@@ -3431,3 +3431,125 @@ func TestCopyIntoWithSkipHeader(t *testing.T) {
 		t.Errorf("Expected (1, Alice), got (%d, %s)", id, name)
 	}
 }
+
+func TestInformationSchemaTables(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create a test table
+	_, err := db.Exec("CREATE TABLE info_schema_test (id INT, name VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+
+	// Query INFORMATION_SCHEMA.TABLES
+	rows, err := db.Query("SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES")
+	if err != nil {
+		t.Fatalf("Query INFORMATION_SCHEMA.TABLES failed: %v", err)
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var catalog, schema, tableName, tableType string
+		if err := rows.Scan(&catalog, &schema, &tableName, &tableType); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if tableName == "info_schema_test" {
+			found = true
+			if tableType != "BASE TABLE" {
+				t.Errorf("Expected TABLE_TYPE 'BASE TABLE', got '%s'", tableType)
+			}
+		}
+	}
+
+	if !found {
+		t.Error("Expected to find 'info_schema_test' table in INFORMATION_SCHEMA.TABLES")
+	}
+}
+
+func TestInformationSchemaColumns(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create a test table
+	_, err := db.Exec("CREATE TABLE info_cols_test (id INTEGER, name VARCHAR, active BOOLEAN)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+
+	// Query INFORMATION_SCHEMA.COLUMNS with filter
+	rows, err := db.Query("SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'info_cols_test' ORDER BY ORDINAL_POSITION")
+	if err != nil {
+		t.Fatalf("Query INFORMATION_SCHEMA.COLUMNS failed: %v", err)
+	}
+	defer rows.Close()
+
+	expectedColumns := []struct {
+		name     string
+		dataType string
+		position int
+	}{
+		{"id", "INTEGER", 1},
+		{"name", "VARCHAR", 2},
+		{"active", "BOOLEAN", 3},
+	}
+
+	i := 0
+	for rows.Next() {
+		var colName, dataType string
+		var position int
+		if err := rows.Scan(&colName, &dataType, &position); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+
+		if i >= len(expectedColumns) {
+			t.Errorf("Got more columns than expected")
+			break
+		}
+
+		if colName != expectedColumns[i].name {
+			t.Errorf("Expected column name '%s', got '%s'", expectedColumns[i].name, colName)
+		}
+		if dataType != expectedColumns[i].dataType {
+			t.Errorf("Expected data type '%s', got '%s'", expectedColumns[i].dataType, dataType)
+		}
+		if position != expectedColumns[i].position {
+			t.Errorf("Expected position %d, got %d", expectedColumns[i].position, position)
+		}
+		i++
+	}
+
+	if i != len(expectedColumns) {
+		t.Errorf("Expected %d columns, got %d", len(expectedColumns), i)
+	}
+}
+
+func TestInformationSchemaSchemata(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Query INFORMATION_SCHEMA.SCHEMATA
+	rows, err := db.Query("SELECT CATALOG_NAME, SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME")
+	if err != nil {
+		t.Fatalf("Query INFORMATION_SCHEMA.SCHEMATA failed: %v", err)
+	}
+	defer rows.Close()
+
+	foundSchemas := make(map[string]bool)
+	for rows.Next() {
+		var catalog, schemaName string
+		if err := rows.Scan(&catalog, &schemaName); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		foundSchemas[schemaName] = true
+	}
+
+	// Verify expected schemas exist
+	expectedSchemas := []string{"INFORMATION_SCHEMA", "PUBLIC"}
+	for _, s := range expectedSchemas {
+		if !foundSchemas[s] {
+			t.Errorf("Expected schema '%s' not found in INFORMATION_SCHEMA.SCHEMATA", s)
+		}
+	}
+}
