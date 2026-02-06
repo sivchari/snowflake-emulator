@@ -176,6 +176,10 @@ impl Executor {
         ctx.register_udf(functions::current_schema());
         ctx.register_udf(functions::current_warehouse());
 
+        // Window functions
+        ctx.register_udwf(functions::conditional_true_event());
+        ctx.register_udwf(functions::conditional_change_event());
+
         // Register _NUMBERS table for FLATTEN support (0-999)
         let numbers_schema = Arc::new(Schema::new(vec![Field::new("idx", DataType::Int64, false)]));
         let numbers: Vec<i64> = (0..1000).collect();
@@ -2428,5 +2432,67 @@ mod tests {
                                                          // West total = 400: 300/400=0.75, 100/400=0.25
         assert_eq!(data[3][3], Some("0.75".to_string())); // id=4, 300/400
         assert_eq!(data[4][3], Some("0.25".to_string())); // id=5, 100/400
+    }
+
+    #[tokio::test]
+    async fn test_conditional_true_event() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE test_cte (id INT, active BOOLEAN)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO test_cte VALUES (1, true), (2, false), (3, true), (4, true), (5, false)")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, active, CONDITIONAL_TRUE_EVENT(active) OVER (ORDER BY id) as event_cnt FROM test_cte ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 5);
+        let data = response.data.unwrap();
+        // Expected: [1, 1, 2, 3, 3] - counter increments on TRUE
+        assert_eq!(data[0][2], Some("1".to_string())); // id=1, true -> 1
+        assert_eq!(data[1][2], Some("1".to_string())); // id=2, false -> 1
+        assert_eq!(data[2][2], Some("2".to_string())); // id=3, true -> 2
+        assert_eq!(data[3][2], Some("3".to_string())); // id=4, true -> 3
+        assert_eq!(data[4][2], Some("3".to_string())); // id=5, false -> 3
+    }
+
+    #[tokio::test]
+    async fn test_conditional_change_event() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE test_cce (id INT, status VARCHAR)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO test_cce VALUES (1, 'A'), (2, 'A'), (3, 'B'), (4, 'B'), (5, 'C')")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute(
+                "SELECT id, status, CONDITIONAL_CHANGE_EVENT(status) OVER (ORDER BY id) as change_cnt FROM test_cce ORDER BY id",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result_set_meta_data.num_rows, 5);
+        let data = response.data.unwrap();
+        // Expected: [0, 0, 1, 1, 2] - counter increments on value change
+        assert_eq!(data[0][2], Some("0".to_string())); // id=1, first row -> 0
+        assert_eq!(data[1][2], Some("0".to_string())); // id=2, A==A -> 0
+        assert_eq!(data[2][2], Some("1".to_string())); // id=3, B!=A -> 1
+        assert_eq!(data[3][2], Some("1".to_string())); // id=4, B==B -> 1
+        assert_eq!(data[4][2], Some("2".to_string())); // id=5, C!=B -> 2
     }
 }
