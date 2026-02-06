@@ -233,6 +233,11 @@ impl Executor {
             return self.handle_show_command(sql, statement_handle).await;
         }
 
+        // Handle INFORMATION_SCHEMA queries
+        if sql_upper.contains("INFORMATION_SCHEMA.") {
+            return self.handle_information_schema(sql, statement_handle).await;
+        }
+
         // Handle DESCRIBE/DESC commands specially
         if sql_upper.starts_with("DESCRIBE ") || sql_upper.starts_with("DESC ") {
             return self.handle_describe_command(sql, statement_handle).await;
@@ -424,6 +429,273 @@ impl Executor {
         }];
 
         let data: Vec<Vec<Option<String>>> = vec![vec![Some("default".to_string())]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    // =========================================================================
+    // INFORMATION_SCHEMA Support
+    // =========================================================================
+
+    /// Handle INFORMATION_SCHEMA queries
+    ///
+    /// Supports:
+    /// - INFORMATION_SCHEMA.TABLES
+    /// - INFORMATION_SCHEMA.COLUMNS
+    /// - INFORMATION_SCHEMA.SCHEMATA
+    async fn handle_information_schema(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let sql_upper = sql.trim().to_uppercase();
+
+        if sql_upper.contains("INFORMATION_SCHEMA.TABLES") {
+            return self
+                .handle_information_schema_tables(statement_handle)
+                .await;
+        }
+
+        if sql_upper.contains("INFORMATION_SCHEMA.COLUMNS") {
+            return self
+                .handle_information_schema_columns(sql, statement_handle)
+                .await;
+        }
+
+        if sql_upper.contains("INFORMATION_SCHEMA.SCHEMATA") {
+            return self.handle_information_schema_schemata(statement_handle);
+        }
+
+        Err(crate::error::Error::ExecutionError(format!(
+            "Unsupported INFORMATION_SCHEMA query: {}",
+            sql
+        )))
+    }
+
+    /// Handle SELECT FROM INFORMATION_SCHEMA.TABLES
+    async fn handle_information_schema_tables(
+        &self,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let catalog = self.ctx.catalog("datafusion").unwrap();
+        let schema = catalog.schema("public").unwrap();
+        let table_names = schema.table_names();
+
+        let columns = vec![
+            ColumnMetaData {
+                name: "TABLE_CATALOG".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "TABLE_SCHEMA".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "TABLE_NAME".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "TABLE_TYPE".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+        ];
+
+        let current_db = self.get_current_database();
+        let current_schema = self.get_current_schema();
+
+        let data: Vec<Vec<Option<String>>> = table_names
+            .iter()
+            .map(|name| {
+                vec![
+                    Some(current_db.clone()),
+                    Some(current_schema.clone()),
+                    Some(name.clone()),
+                    Some("BASE TABLE".to_string()),
+                ]
+            })
+            .collect();
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle SELECT FROM INFORMATION_SCHEMA.COLUMNS
+    async fn handle_information_schema_columns(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let columns = vec![
+            ColumnMetaData {
+                name: "TABLE_CATALOG".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "TABLE_SCHEMA".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "TABLE_NAME".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "COLUMN_NAME".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "ORDINAL_POSITION".to_string(),
+                r#type: "NUMBER".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "DATA_TYPE".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "IS_NULLABLE".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+        ];
+
+        let catalog = self.ctx.catalog("datafusion").unwrap();
+        let schema = catalog.schema("public").unwrap();
+
+        let current_db = self.get_current_database();
+        let current_schema = self.get_current_schema();
+
+        // Check if filtering by table name
+        let sql_upper = sql.to_uppercase();
+        let filter_table: Option<String> = if sql_upper.contains("WHERE") {
+            // Simple pattern matching for WHERE TABLE_NAME = 'xxx'
+            let pattern = regex::Regex::new(r"(?i)TABLE_NAME\s*=\s*'([^']+)'").unwrap();
+            pattern
+                .captures(&sql_upper)
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str().to_lowercase())
+        } else {
+            None
+        };
+
+        let mut data: Vec<Vec<Option<String>>> = Vec::new();
+
+        for table_name in schema.table_names() {
+            // Apply filter if present
+            if let Some(ref filter) = filter_table {
+                if table_name.to_lowercase() != *filter {
+                    continue;
+                }
+            }
+
+            if let Ok(Some(table)) = schema.table(&table_name).await {
+                let table_schema = table.schema();
+                for (idx, field) in table_schema.fields().iter().enumerate() {
+                    let (data_type, _, _, _) = self.arrow_type_to_snowflake(field.data_type());
+                    let is_nullable = if field.is_nullable() { "YES" } else { "NO" };
+
+                    data.push(vec![
+                        Some(current_db.clone()),
+                        Some(current_schema.clone()),
+                        Some(table_name.clone()),
+                        Some(field.name().clone()),
+                        Some((idx + 1).to_string()),
+                        Some(data_type),
+                        Some(is_nullable.to_string()),
+                    ]);
+                }
+            }
+        }
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle SELECT FROM INFORMATION_SCHEMA.SCHEMATA
+    fn handle_information_schema_schemata(
+        &self,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let columns = vec![
+            ColumnMetaData {
+                name: "CATALOG_NAME".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "SCHEMA_NAME".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "SCHEMA_OWNER".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+        ];
+
+        let current_db = self.get_current_database();
+
+        let data: Vec<Vec<Option<String>>> = vec![
+            vec![
+                Some(current_db.clone()),
+                Some("PUBLIC".to_string()),
+                Some("EMULATOR_USER".to_string()),
+            ],
+            vec![
+                Some(current_db.clone()),
+                Some("INFORMATION_SCHEMA".to_string()),
+                Some("EMULATOR_USER".to_string()),
+            ],
+        ];
 
         Ok(StatementResponse::success(data, columns, statement_handle))
     }
@@ -4971,5 +5243,106 @@ mod tests {
 
         // Cleanup
         std::fs::remove_file(&csv_path).ok();
+    }
+
+    // =========================================================================
+    // INFORMATION_SCHEMA Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_information_schema_tables() {
+        let executor = Executor::new();
+
+        // Create a table first
+        executor
+            .execute("CREATE TABLE info_test (id INTEGER, name VARCHAR)")
+            .await
+            .unwrap();
+
+        // Query INFORMATION_SCHEMA.TABLES
+        let response = executor
+            .execute("SELECT * FROM INFORMATION_SCHEMA.TABLES")
+            .await
+            .unwrap();
+
+        let columns = &response.result_set_meta_data.row_type;
+        assert_eq!(columns.len(), 4);
+        assert_eq!(columns[0].name, "TABLE_CATALOG");
+        assert_eq!(columns[1].name, "TABLE_SCHEMA");
+        assert_eq!(columns[2].name, "TABLE_NAME");
+        assert_eq!(columns[3].name, "TABLE_TYPE");
+
+        let data = response.data.unwrap();
+        // Find our table
+        let our_table = data
+            .iter()
+            .find(|row| row[2].as_ref().unwrap() == "info_test");
+        assert!(our_table.is_some());
+        let row = our_table.unwrap();
+        assert_eq!(row[3].as_ref().unwrap(), "BASE TABLE");
+    }
+
+    #[tokio::test]
+    async fn test_information_schema_columns() {
+        let executor = Executor::new();
+
+        // Create a table first
+        executor
+            .execute("CREATE TABLE columns_test (id INTEGER, name VARCHAR, active BOOLEAN)")
+            .await
+            .unwrap();
+
+        // Query INFORMATION_SCHEMA.COLUMNS
+        let response = executor
+            .execute("SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'columns_test'")
+            .await
+            .unwrap();
+
+        let columns = &response.result_set_meta_data.row_type;
+        assert_eq!(columns.len(), 7);
+        assert_eq!(columns[3].name, "COLUMN_NAME");
+        assert_eq!(columns[4].name, "ORDINAL_POSITION");
+        assert_eq!(columns[5].name, "DATA_TYPE");
+
+        let data = response.data.unwrap();
+        assert_eq!(data.len(), 3); // 3 columns
+
+        // Check first column (id)
+        assert_eq!(data[0][3].as_ref().unwrap(), "id");
+        assert_eq!(data[0][4].as_ref().unwrap(), "1");
+
+        // Check second column (name)
+        assert_eq!(data[1][3].as_ref().unwrap(), "name");
+        assert_eq!(data[1][4].as_ref().unwrap(), "2");
+
+        // Check third column (active)
+        assert_eq!(data[2][3].as_ref().unwrap(), "active");
+        assert_eq!(data[2][4].as_ref().unwrap(), "3");
+    }
+
+    #[tokio::test]
+    async fn test_information_schema_schemata() {
+        let executor = Executor::new();
+
+        // Query INFORMATION_SCHEMA.SCHEMATA
+        let response = executor
+            .execute("SELECT * FROM INFORMATION_SCHEMA.SCHEMATA")
+            .await
+            .unwrap();
+
+        let columns = &response.result_set_meta_data.row_type;
+        assert_eq!(columns.len(), 3);
+        assert_eq!(columns[0].name, "CATALOG_NAME");
+        assert_eq!(columns[1].name, "SCHEMA_NAME");
+        assert_eq!(columns[2].name, "SCHEMA_OWNER");
+
+        let data = response.data.unwrap();
+        assert_eq!(data.len(), 2); // PUBLIC and INFORMATION_SCHEMA
+
+        // Check PUBLIC schema
+        assert_eq!(data[0][1].as_ref().unwrap(), "PUBLIC");
+
+        // Check INFORMATION_SCHEMA
+        assert_eq!(data[1][1].as_ref().unwrap(), "INFORMATION_SCHEMA");
     }
 }
