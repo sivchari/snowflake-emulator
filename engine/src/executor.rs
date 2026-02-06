@@ -73,6 +73,12 @@ pub struct Executor {
 
     /// Current schema name (session state)
     current_schema: Arc<RwLock<String>>,
+
+    /// Transaction state: true if in a transaction
+    in_transaction: Arc<RwLock<bool>>,
+
+    /// Transaction snapshot: table data at BEGIN time for ROLLBACK support
+    transaction_snapshot: Arc<RwLock<HashMap<String, Vec<RecordBatch>>>>,
 }
 
 impl Executor {
@@ -208,6 +214,8 @@ impl Executor {
             views: Arc::new(RwLock::new(HashMap::new())),
             current_database: Arc::new(RwLock::new("TESTDB".to_string())),
             current_schema: Arc::new(RwLock::new("PUBLIC".to_string())),
+            in_transaction: Arc::new(RwLock::new(false)),
+            transaction_snapshot: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -280,6 +288,15 @@ impl Executor {
         // Handle USE DATABASE/SCHEMA statement
         if sql_upper.starts_with("USE ") {
             return self.handle_use(sql, statement_handle);
+        }
+
+        // Handle transaction statements
+        if sql_upper.starts_with("BEGIN")
+            || sql_upper.starts_with("START TRANSACTION")
+            || sql_upper == "COMMIT"
+            || sql_upper == "ROLLBACK"
+        {
+            return self.handle_transaction(sql, statement_handle).await;
         }
 
         // Handle CURRENT_DATABASE() and CURRENT_SCHEMA() context functions
@@ -1596,6 +1613,193 @@ impl Executor {
         Err(crate::error::Error::ExecutionError(
             "Unknown context function".to_string(),
         ))
+    }
+
+    /// Handle transaction statements (BEGIN, COMMIT, ROLLBACK)
+    ///
+    /// Implements basic transaction support:
+    /// - BEGIN/START TRANSACTION: Start a new transaction, snapshot current table state
+    /// - COMMIT: End transaction, discard snapshot (changes are already applied)
+    /// - ROLLBACK: End transaction, restore tables from snapshot
+    async fn handle_transaction(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let sql_upper = sql.trim().to_uppercase();
+
+        if sql_upper.starts_with("BEGIN") || sql_upper.starts_with("START TRANSACTION") {
+            return self.handle_begin(statement_handle).await;
+        }
+
+        if sql_upper == "COMMIT" {
+            return self.handle_commit(statement_handle);
+        }
+
+        if sql_upper == "ROLLBACK" {
+            return self.handle_rollback(statement_handle).await;
+        }
+
+        Err(crate::error::Error::ExecutionError(
+            "Unknown transaction command".to_string(),
+        ))
+    }
+
+    /// Handle BEGIN/START TRANSACTION
+    async fn handle_begin(&self, statement_handle: String) -> Result<StatementResponse> {
+        // Check if already in a transaction
+        {
+            let in_tx = self.in_transaction.read().unwrap();
+            if *in_tx {
+                return Err(crate::error::Error::ExecutionError(
+                    "Transaction already in progress".to_string(),
+                ));
+            }
+        }
+
+        // Snapshot all user tables
+        let mut snapshot = HashMap::new();
+        let catalog = self.ctx.catalog("datafusion").unwrap();
+        let schema = catalog.schema("public").unwrap();
+        let table_names = schema.table_names();
+
+        for table_name in table_names {
+            // Skip internal tables
+            if table_name.starts_with('_') {
+                continue;
+            }
+
+            if let Ok(Some(_table)) = schema.table(&table_name).await {
+                // Get all data from the table
+                let select_sql = format!("SELECT * FROM {}", table_name);
+                if let Ok(df) = self.ctx.sql(&select_sql).await {
+                    if let Ok(batches) = df.collect().await {
+                        snapshot.insert(table_name.clone(), batches);
+                    }
+                }
+            }
+        }
+
+        // Store snapshot and mark as in transaction
+        {
+            let mut tx_snapshot = self.transaction_snapshot.write().unwrap();
+            *tx_snapshot = snapshot;
+        }
+        {
+            let mut in_tx = self.in_transaction.write().unwrap();
+            *in_tx = true;
+        }
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+        let data = vec![vec![Some("Statement executed successfully.".to_string())]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle COMMIT
+    fn handle_commit(&self, statement_handle: String) -> Result<StatementResponse> {
+        // Check if in a transaction
+        {
+            let in_tx = self.in_transaction.read().unwrap();
+            if !*in_tx {
+                // Snowflake allows COMMIT even without explicit BEGIN
+                // Just return success
+            }
+        }
+
+        // Clear transaction state
+        {
+            let mut tx_snapshot = self.transaction_snapshot.write().unwrap();
+            tx_snapshot.clear();
+        }
+        {
+            let mut in_tx = self.in_transaction.write().unwrap();
+            *in_tx = false;
+        }
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+        let data = vec![vec![Some("Statement executed successfully.".to_string())]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle ROLLBACK
+    async fn handle_rollback(&self, statement_handle: String) -> Result<StatementResponse> {
+        // Check if in a transaction
+        let was_in_tx = {
+            let in_tx = self.in_transaction.read().unwrap();
+            *in_tx
+        };
+
+        if was_in_tx {
+            // Restore tables from snapshot
+            let snapshot = {
+                let tx_snapshot = self.transaction_snapshot.read().unwrap();
+                tx_snapshot.clone()
+            };
+
+            for (table_name, batches) in snapshot {
+                if batches.is_empty() {
+                    continue;
+                }
+
+                // Get schema from first batch
+                let table_schema = batches[0].schema();
+
+                // Recreate the table with snapshot data
+                let mem_table =
+                    MemTable::try_new(table_schema, vec![batches]).map_err(|e| {
+                        crate::error::Error::ExecutionError(format!(
+                            "Failed to restore table {}: {}",
+                            table_name, e
+                        ))
+                    })?;
+
+                // Re-register the table
+                self.ctx
+                    .deregister_table(&table_name)
+                    .map_err(|e| crate::error::Error::DataFusion(e))?;
+                self.ctx
+                    .register_table(&table_name, Arc::new(mem_table))
+                    .map_err(|e| crate::error::Error::DataFusion(e))?;
+            }
+        }
+
+        // Clear transaction state
+        {
+            let mut tx_snapshot = self.transaction_snapshot.write().unwrap();
+            tx_snapshot.clear();
+        }
+        {
+            let mut in_tx = self.in_transaction.write().unwrap();
+            *in_tx = false;
+        }
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+        let data = vec![vec![Some("Statement executed successfully.".to_string())]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
     }
 
     /// Convert Snowflake type string to Arrow DataType
@@ -4074,5 +4278,122 @@ mod tests {
 
         // Verify schema was changed
         assert_eq!(executor.get_current_schema(), "STAGING");
+    }
+
+    // =========================================================================
+    // Transaction Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_begin_commit() {
+        let executor = Executor::new();
+
+        // Create table and insert data
+        executor
+            .execute("CREATE TABLE tx_test (id INT, value INT)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO tx_test VALUES (1, 100)")
+            .await
+            .unwrap();
+
+        // Begin transaction
+        let response = executor.execute("BEGIN").await.unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("successfully"));
+
+        // Modify data
+        executor
+            .execute("UPDATE tx_test SET value = 200 WHERE id = 1")
+            .await
+            .unwrap();
+
+        // Commit
+        let response = executor.execute("COMMIT").await.unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("successfully"));
+
+        // Verify data persists
+        let response = executor
+            .execute("SELECT value FROM tx_test WHERE id = 1")
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("200".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_begin_rollback() {
+        let executor = Executor::new();
+
+        // Create table and insert data
+        executor
+            .execute("CREATE TABLE rollback_test (id INT, value INT)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO rollback_test VALUES (1, 100)")
+            .await
+            .unwrap();
+
+        // Begin transaction
+        executor.execute("BEGIN").await.unwrap();
+
+        // Modify data
+        executor
+            .execute("UPDATE rollback_test SET value = 999 WHERE id = 1")
+            .await
+            .unwrap();
+
+        // Rollback
+        let response = executor.execute("ROLLBACK").await.unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("successfully"));
+
+        // Verify data was restored
+        let response = executor
+            .execute("SELECT value FROM rollback_test WHERE id = 1")
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("100".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_start_transaction() {
+        let executor = Executor::new();
+
+        // START TRANSACTION is an alias for BEGIN
+        let response = executor.execute("START TRANSACTION").await.unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("successfully"));
+
+        // Commit
+        let response = executor.execute("COMMIT").await.unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("successfully"));
+    }
+
+    #[tokio::test]
+    async fn test_commit_without_begin() {
+        let executor = Executor::new();
+
+        // COMMIT without BEGIN should still succeed (Snowflake behavior)
+        let response = executor.execute("COMMIT").await.unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("successfully"));
+    }
+
+    #[tokio::test]
+    async fn test_rollback_without_begin() {
+        let executor = Executor::new();
+
+        // ROLLBACK without BEGIN should still succeed
+        let response = executor.execute("ROLLBACK").await.unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("successfully"));
     }
 }

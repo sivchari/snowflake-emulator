@@ -3140,3 +3140,138 @@ func TestUseQualifiedName(t *testing.T) {
 		t.Errorf("Expected schema 'TEST_SCHEMA', got '%s'", schemaName)
 	}
 }
+
+// =============================================================================
+// Transaction Tests
+// =============================================================================
+
+func TestBeginCommit(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE tx_test (id INT, value INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE tx_test")
+
+	_, err = db.Exec("INSERT INTO tx_test VALUES (1, 100)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Begin transaction
+	_, err = db.Exec("BEGIN")
+	if err != nil {
+		t.Fatalf("BEGIN failed: %v", err)
+	}
+
+	// Modify data
+	_, err = db.Exec("UPDATE tx_test SET value = 200 WHERE id = 1")
+	if err != nil {
+		t.Fatalf("UPDATE failed: %v", err)
+	}
+
+	// Commit
+	_, err = db.Exec("COMMIT")
+	if err != nil {
+		t.Fatalf("COMMIT failed: %v", err)
+	}
+
+	// Verify data persists
+	var value int
+	err = db.QueryRow("SELECT value FROM tx_test WHERE id = 1").Scan(&value)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if value != 200 {
+		t.Errorf("Expected value 200, got %d", value)
+	}
+}
+
+func TestBeginRollback(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE rollback_test (id INT, value INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE rollback_test")
+
+	_, err = db.Exec("INSERT INTO rollback_test VALUES (1, 100)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Begin transaction
+	_, err = db.Exec("BEGIN")
+	if err != nil {
+		t.Fatalf("BEGIN failed: %v", err)
+	}
+
+	// Modify data
+	_, err = db.Exec("UPDATE rollback_test SET value = 999 WHERE id = 1")
+	if err != nil {
+		t.Fatalf("UPDATE failed: %v", err)
+	}
+
+	// Rollback
+	_, err = db.Exec("ROLLBACK")
+	if err != nil {
+		t.Fatalf("ROLLBACK failed: %v", err)
+	}
+
+	// Verify data was restored
+	var value int
+	err = db.QueryRow("SELECT value FROM rollback_test WHERE id = 1").Scan(&value)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if value != 100 {
+		t.Errorf("Expected value 100 after ROLLBACK, got %d", value)
+	}
+}
+
+func TestStartTransaction(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// START TRANSACTION is an alias for BEGIN
+	_, err := db.Exec("START TRANSACTION")
+	if err != nil {
+		t.Fatalf("START TRANSACTION failed: %v", err)
+	}
+
+	// Commit
+	_, err = db.Exec("COMMIT")
+	if err != nil {
+		t.Fatalf("COMMIT failed: %v", err)
+	}
+}
+
+func TestCommitWithoutBegin(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// COMMIT without BEGIN should still succeed (Snowflake behavior)
+	_, err := db.Exec("COMMIT")
+	if err != nil {
+		t.Fatalf("COMMIT without BEGIN failed: %v", err)
+	}
+}
+
+func TestRollbackWithoutBegin(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// ROLLBACK without BEGIN should still succeed
+	_, err := db.Exec("ROLLBACK")
+	if err != nil {
+		t.Fatalf("ROLLBACK without BEGIN failed: %v", err)
+	}
+}
