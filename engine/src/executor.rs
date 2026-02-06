@@ -79,6 +79,9 @@ pub struct Executor {
 
     /// Transaction snapshot: table data at BEGIN time for ROLLBACK support
     transaction_snapshot: Arc<RwLock<HashMap<String, Vec<RecordBatch>>>>,
+
+    /// Stages storage: stage_name -> directory path
+    stages: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl Executor {
@@ -216,6 +219,7 @@ impl Executor {
             current_schema: Arc::new(RwLock::new("PUBLIC".to_string())),
             in_transaction: Arc::new(RwLock::new(false)),
             transaction_snapshot: Arc::new(RwLock::new(HashMap::new())),
+            stages: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -297,6 +301,23 @@ impl Executor {
             || sql_upper == "ROLLBACK"
         {
             return self.handle_transaction(sql, statement_handle).await;
+        }
+
+        // Handle CREATE STAGE
+        if sql_upper.starts_with("CREATE STAGE ")
+            || sql_upper.starts_with("CREATE OR REPLACE STAGE ")
+        {
+            return self.handle_create_stage(sql, statement_handle);
+        }
+
+        // Handle DROP STAGE
+        if sql_upper.starts_with("DROP STAGE ") {
+            return self.handle_drop_stage(sql, statement_handle);
+        }
+
+        // Handle COPY INTO
+        if sql_upper.starts_with("COPY INTO ") {
+            return self.handle_copy_into(sql, statement_handle).await;
         }
 
         // Handle CURRENT_DATABASE() and CURRENT_SCHEMA() context functions
@@ -1761,13 +1782,12 @@ impl Executor {
                 let table_schema = batches[0].schema();
 
                 // Recreate the table with snapshot data
-                let mem_table =
-                    MemTable::try_new(table_schema, vec![batches]).map_err(|e| {
-                        crate::error::Error::ExecutionError(format!(
-                            "Failed to restore table {}: {}",
-                            table_name, e
-                        ))
-                    })?;
+                let mem_table = MemTable::try_new(table_schema, vec![batches]).map_err(|e| {
+                    crate::error::Error::ExecutionError(format!(
+                        "Failed to restore table {}: {}",
+                        table_name, e
+                    ))
+                })?;
 
                 // Re-register the table
                 self.ctx
@@ -1800,6 +1820,347 @@ impl Executor {
         let data = vec![vec![Some("Statement executed successfully.".to_string())]];
 
         Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    // =========================================================================
+    // COPY INTO Support (Stages and File Loading)
+    // =========================================================================
+
+    /// Handle CREATE STAGE command
+    ///
+    /// Syntax:
+    /// ```sql
+    /// CREATE STAGE stage_name URL = 'file:///path/to/directory'
+    /// CREATE OR REPLACE STAGE stage_name URL = 'file:///path/to/directory'
+    /// ```
+    fn handle_create_stage(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        // Parse stage name and URL
+        let create_pattern = regex::Regex::new(
+            r"(?i)CREATE\s+(?:OR\s+REPLACE\s+)?STAGE\s+(\w+)\s+URL\s*=\s*'([^']+)'",
+        )
+        .unwrap();
+
+        let captures = create_pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid CREATE STAGE syntax".to_string())
+        })?;
+
+        let stage_name = captures.get(1).unwrap().as_str().to_uppercase();
+        let url = captures.get(2).unwrap().as_str();
+
+        // Extract directory path from URL (file:///path or /path)
+        let dir_path = if url.starts_with("file://") {
+            url.strip_prefix("file://").unwrap().to_string()
+        } else {
+            url.to_string()
+        };
+
+        // Store the stage
+        {
+            let mut stages = self.stages.write().unwrap();
+            stages.insert(stage_name.clone(), dir_path);
+        }
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let data = vec![vec![Some(format!(
+            "Stage {stage_name} successfully created."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle DROP STAGE command
+    ///
+    /// Syntax:
+    /// ```sql
+    /// DROP STAGE stage_name
+    /// DROP STAGE IF EXISTS stage_name
+    /// ```
+    fn handle_drop_stage(&self, sql: &str, statement_handle: String) -> Result<StatementResponse> {
+        let drop_pattern =
+            regex::Regex::new(r"(?i)DROP\s+STAGE\s+(?:IF\s+EXISTS\s+)?(\w+)").unwrap();
+
+        let captures = drop_pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid DROP STAGE syntax".to_string())
+        })?;
+
+        let stage_name = captures.get(1).unwrap().as_str().to_uppercase();
+        let if_exists = sql.to_uppercase().contains("IF EXISTS");
+
+        // Remove the stage
+        let removed = {
+            let mut stages = self.stages.write().unwrap();
+            stages.remove(&stage_name).is_some()
+        };
+
+        if !removed && !if_exists {
+            return Err(crate::error::Error::ExecutionError(format!(
+                "Stage {stage_name} does not exist"
+            )));
+        }
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let message = if removed {
+            format!("Stage {stage_name} successfully dropped.")
+        } else {
+            "Statement executed successfully.".to_string()
+        };
+
+        let data = vec![vec![Some(message)]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle COPY INTO command
+    ///
+    /// Syntax:
+    /// ```sql
+    /// COPY INTO table_name FROM @stage_name FILE_FORMAT = (TYPE = 'CSV')
+    /// COPY INTO table_name FROM @stage_name/file.csv FILE_FORMAT = (TYPE = 'CSV')
+    /// ```
+    async fn handle_copy_into(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        // Parse COPY INTO syntax
+        // COPY INTO table FROM @stage[/path] [FILE_FORMAT = (TYPE = 'CSV' [SKIP_HEADER = 1])]
+        let copy_pattern = regex::Regex::new(
+            r"(?i)COPY\s+INTO\s+(\w+)\s+FROM\s+@(\w+)(?:/([^\s]+))?\s*(?:FILE_FORMAT\s*=\s*\(([^)]+)\))?",
+        )
+        .unwrap();
+
+        let captures = copy_pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid COPY INTO syntax".to_string())
+        })?;
+
+        // Table names are stored in lowercase in DataFusion
+        let table_name = captures.get(1).unwrap().as_str().to_lowercase();
+        let stage_name = captures.get(2).unwrap().as_str().to_uppercase();
+        let file_path = captures.get(3).map(|m| m.as_str().to_string());
+        let file_format = captures.get(4).map(|m| m.as_str().to_string());
+
+        // Parse file format options
+        let skip_header = if let Some(ref format_str) = file_format {
+            let format_upper = format_str.to_uppercase();
+            if format_upper.contains("SKIP_HEADER") {
+                // Extract skip_header value
+                let skip_pattern = regex::Regex::new(r"(?i)SKIP_HEADER\s*=\s*(\d+)").unwrap();
+                skip_pattern
+                    .captures(&format_upper)
+                    .and_then(|c| c.get(1))
+                    .and_then(|m| m.as_str().parse::<usize>().ok())
+                    .unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        // Get stage directory
+        let stage_dir = {
+            let stages = self.stages.read().unwrap();
+            stages.get(&stage_name).cloned()
+        }
+        .ok_or_else(|| {
+            crate::error::Error::ExecutionError(format!("Stage {stage_name} does not exist"))
+        })?;
+
+        // Build full file path
+        let full_path = if let Some(ref file) = file_path {
+            format!("{}/{}", stage_dir, file)
+        } else {
+            stage_dir.clone()
+        };
+
+        // Get list of CSV files to load
+        let files_to_load = self.get_csv_files(&full_path)?;
+
+        if files_to_load.is_empty() {
+            return Err(crate::error::Error::ExecutionError(format!(
+                "No CSV files found in {}",
+                full_path
+            )));
+        }
+
+        // Get target table schema
+        let catalog = self.ctx.catalog("datafusion").unwrap();
+        let schema = catalog.schema("public").unwrap();
+        let table = schema
+            .table(&table_name)
+            .await
+            .map_err(|e| crate::error::Error::DataFusion(e))?
+            .ok_or_else(|| {
+                crate::error::Error::ExecutionError(format!("Table {table_name} does not exist"))
+            })?;
+
+        let table_schema = table.schema();
+
+        // Load and insert data from each CSV file
+        let mut total_rows: usize = 0;
+        for csv_file in &files_to_load {
+            let rows_loaded = self
+                .load_csv_into_table(&table_name, csv_file, &table_schema, skip_header)
+                .await?;
+            total_rows += rows_loaded;
+        }
+
+        let columns = vec![
+            ColumnMetaData {
+                name: "rows_loaded".to_string(),
+                r#type: "NUMBER".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "files_loaded".to_string(),
+                r#type: "NUMBER".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+        ];
+
+        let data = vec![vec![
+            Some(total_rows.to_string()),
+            Some(files_to_load.len().to_string()),
+        ]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Get list of CSV files from a path (file or directory)
+    fn get_csv_files(&self, path: &str) -> Result<Vec<String>> {
+        let path_obj = std::path::Path::new(path);
+
+        if path_obj.is_file() {
+            Ok(vec![path.to_string()])
+        } else if path_obj.is_dir() {
+            let mut files = Vec::new();
+            let entries = std::fs::read_dir(path).map_err(|e| {
+                crate::error::Error::ExecutionError(format!(
+                    "Failed to read directory {}: {}",
+                    path, e
+                ))
+            })?;
+
+            for entry in entries {
+                let entry = entry.map_err(|e| {
+                    crate::error::Error::ExecutionError(format!(
+                        "Failed to read directory entry: {}",
+                        e
+                    ))
+                })?;
+                let file_path = entry.path();
+                if file_path.is_file() {
+                    if let Some(ext) = file_path.extension() {
+                        if ext.to_string_lossy().to_lowercase() == "csv" {
+                            files.push(file_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+
+            Ok(files)
+        } else {
+            Err(crate::error::Error::ExecutionError(format!(
+                "Path does not exist: {}",
+                path
+            )))
+        }
+    }
+
+    /// Load CSV file data into a table
+    async fn load_csv_into_table(
+        &self,
+        table_name: &str,
+        csv_path: &str,
+        table_schema: &Arc<arrow::datatypes::Schema>,
+        skip_header: usize,
+    ) -> Result<usize> {
+        use std::io::BufRead;
+
+        let file = std::fs::File::open(csv_path).map_err(|e| {
+            crate::error::Error::ExecutionError(format!("Failed to open file {}: {}", csv_path, e))
+        })?;
+        let reader = std::io::BufReader::new(file);
+
+        let mut lines: Vec<String> = reader
+            .lines()
+            .map(|l| l.unwrap_or_default())
+            .skip(skip_header)
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+
+        if lines.is_empty() {
+            return Ok(0);
+        }
+
+        let num_rows = lines.len();
+
+        // Build INSERT statements for each row
+        let columns: Vec<String> = table_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        let columns_str = columns.join(", ");
+
+        for line in &mut lines {
+            // Parse CSV line (simple parsing, doesn't handle quoted fields with commas)
+            let values: Vec<String> = line
+                .split(',')
+                .map(|v| {
+                    let trimmed = v.trim();
+                    // Quote string values, keep numbers as-is
+                    if trimmed.parse::<f64>().is_ok() || trimmed.to_uppercase() == "NULL" {
+                        trimmed.to_string()
+                    } else {
+                        format!("'{}'", trimmed.replace('\'', "''"))
+                    }
+                })
+                .collect();
+
+            let values_str = values.join(", ");
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                table_name, columns_str, values_str
+            );
+
+            // Execute the INSERT
+            self.ctx
+                .sql(&insert_sql)
+                .await
+                .map_err(|e| crate::error::Error::DataFusion(e))?
+                .collect()
+                .await
+                .map_err(|e| crate::error::Error::DataFusion(e))?;
+        }
+
+        Ok(num_rows)
     }
 
     /// Convert Snowflake type string to Arrow DataType
@@ -4395,5 +4756,220 @@ mod tests {
         let response = executor.execute("ROLLBACK").await.unwrap();
         let data = response.data.unwrap();
         assert!(data[0][0].as_ref().unwrap().contains("successfully"));
+    }
+
+    // =========================================================================
+    // COPY INTO Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_create_stage() {
+        let executor = Executor::new();
+
+        let response = executor
+            .execute("CREATE STAGE my_stage URL = 'file:///tmp/data'")
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("MY_STAGE"));
+        assert!(data[0][0]
+            .as_ref()
+            .unwrap()
+            .contains("successfully created"));
+    }
+
+    #[tokio::test]
+    async fn test_create_or_replace_stage() {
+        let executor = Executor::new();
+
+        // Create stage
+        executor
+            .execute("CREATE STAGE test_stage URL = 'file:///tmp/old'")
+            .await
+            .unwrap();
+
+        // Replace stage
+        let response = executor
+            .execute("CREATE OR REPLACE STAGE test_stage URL = 'file:///tmp/new'")
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("TEST_STAGE"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_stage() {
+        let executor = Executor::new();
+
+        // Create stage first
+        executor
+            .execute("CREATE STAGE drop_test URL = 'file:///tmp'")
+            .await
+            .unwrap();
+
+        // Drop stage
+        let response = executor.execute("DROP STAGE drop_test").await.unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0]
+            .as_ref()
+            .unwrap()
+            .contains("successfully dropped"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_stage_not_exists() {
+        let executor = Executor::new();
+
+        // Drop non-existent stage should fail
+        let result = executor.execute("DROP STAGE nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_drop_stage_if_exists() {
+        let executor = Executor::new();
+
+        // DROP STAGE IF EXISTS on non-existent stage should succeed
+        let response = executor
+            .execute("DROP STAGE IF EXISTS nonexistent")
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("successfully"));
+    }
+
+    #[tokio::test]
+    async fn test_copy_into_csv() {
+        let executor = Executor::new();
+
+        // Create table
+        executor
+            .execute("CREATE TABLE csv_test (id INTEGER, name VARCHAR)")
+            .await
+            .unwrap();
+
+        // Create temp directory and CSV file
+        let temp_dir = std::env::temp_dir();
+        let csv_path = temp_dir.join("copy_test.csv");
+        std::fs::write(&csv_path, "1,Alice\n2,Bob\n3,Charlie\n").unwrap();
+
+        // Create stage pointing to temp directory
+        let stage_sql = format!(
+            "CREATE STAGE csv_stage URL = 'file://{}'",
+            temp_dir.display()
+        );
+        executor.execute(&stage_sql).await.unwrap();
+
+        // Copy into table
+        let response = executor
+            .execute(
+                "COPY INTO csv_test FROM @csv_stage/copy_test.csv FILE_FORMAT = (TYPE = 'CSV')",
+            )
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0].as_ref().unwrap(), "3"); // 3 rows loaded
+        assert_eq!(data[0][1].as_ref().unwrap(), "1"); // 1 file loaded
+
+        // Verify data
+        let select_response = executor
+            .execute("SELECT COUNT(*) FROM csv_test")
+            .await
+            .unwrap();
+        let select_data = select_response.data.unwrap();
+        assert_eq!(select_data[0][0].as_ref().unwrap(), "3");
+
+        // Cleanup
+        std::fs::remove_file(&csv_path).ok();
+    }
+
+    #[tokio::test]
+    async fn test_copy_into_with_skip_header() {
+        let executor = Executor::new();
+
+        // Create table
+        executor
+            .execute("CREATE TABLE header_test (id INTEGER, name VARCHAR)")
+            .await
+            .unwrap();
+
+        // Create temp directory and CSV file with header
+        let temp_dir = std::env::temp_dir();
+        let csv_path = temp_dir.join("header_test.csv");
+        std::fs::write(&csv_path, "ID,NAME\n1,Alice\n2,Bob\n").unwrap();
+
+        // Create stage
+        let stage_sql = format!(
+            "CREATE STAGE header_stage URL = 'file://{}'",
+            temp_dir.display()
+        );
+        executor.execute(&stage_sql).await.unwrap();
+
+        // Copy with SKIP_HEADER
+        let response = executor
+            .execute(
+                "COPY INTO header_test FROM @header_stage/header_test.csv FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1)",
+            )
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0].as_ref().unwrap(), "2"); // 2 rows (excluding header)
+
+        // Verify data
+        let select_response = executor
+            .execute("SELECT * FROM header_test ORDER BY id")
+            .await
+            .unwrap();
+        let select_data = select_response.data.unwrap();
+        assert_eq!(select_data[0][0].as_ref().unwrap(), "1");
+        assert_eq!(select_data[0][1].as_ref().unwrap(), "Alice");
+        assert_eq!(select_data[1][0].as_ref().unwrap(), "2");
+        assert_eq!(select_data[1][1].as_ref().unwrap(), "Bob");
+
+        // Cleanup
+        std::fs::remove_file(&csv_path).ok();
+    }
+
+    #[tokio::test]
+    async fn test_copy_into_stage_not_exists() {
+        let executor = Executor::new();
+
+        // Create table
+        executor
+            .execute("CREATE TABLE no_stage_test (id INTEGER)")
+            .await
+            .unwrap();
+
+        // Try to copy from non-existent stage
+        let result = executor
+            .execute("COPY INTO no_stage_test FROM @nonexistent FILE_FORMAT = (TYPE = 'CSV')")
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_copy_into_table_not_exists() {
+        let executor = Executor::new();
+
+        // Create stage
+        let temp_dir = std::env::temp_dir();
+        let stage_sql = format!(
+            "CREATE STAGE table_test_stage URL = 'file://{}'",
+            temp_dir.display()
+        );
+        executor.execute(&stage_sql).await.unwrap();
+
+        // Create a CSV file
+        let csv_path = temp_dir.join("table_test.csv");
+        std::fs::write(&csv_path, "1,test\n").unwrap();
+
+        // Try to copy into non-existent table
+        let result = executor
+            .execute("COPY INTO nonexistent_table FROM @table_test_stage/table_test.csv FILE_FORMAT = (TYPE = 'CSV')")
+            .await;
+        assert!(result.is_err());
+
+        // Cleanup
+        std::fs::remove_file(&csv_path).ok();
     }
 }

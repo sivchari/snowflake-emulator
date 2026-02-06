@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"testing"
 
 	sf "github.com/snowflakedb/gosnowflake"
@@ -3273,5 +3274,160 @@ func TestRollbackWithoutBegin(t *testing.T) {
 	_, err := db.Exec("ROLLBACK")
 	if err != nil {
 		t.Fatalf("ROLLBACK without BEGIN failed: %v", err)
+	}
+}
+
+// ===========================================================================
+// COPY INTO Tests
+// ===========================================================================
+
+func TestCreateStage(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create stage
+	_, err := db.Exec("CREATE STAGE my_test_stage URL = 'file:///tmp/test_data'")
+	if err != nil {
+		t.Fatalf("CREATE STAGE failed: %v", err)
+	}
+}
+
+func TestCreateOrReplaceStage(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create stage
+	_, err := db.Exec("CREATE STAGE replace_test URL = 'file:///tmp/old'")
+	if err != nil {
+		t.Fatalf("CREATE STAGE failed: %v", err)
+	}
+
+	// Replace stage
+	_, err = db.Exec("CREATE OR REPLACE STAGE replace_test URL = 'file:///tmp/new'")
+	if err != nil {
+		t.Fatalf("CREATE OR REPLACE STAGE failed: %v", err)
+	}
+}
+
+func TestDropStage(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create stage first
+	_, err := db.Exec("CREATE STAGE drop_test_stage URL = 'file:///tmp'")
+	if err != nil {
+		t.Fatalf("CREATE STAGE failed: %v", err)
+	}
+
+	// Drop stage
+	_, err = db.Exec("DROP STAGE drop_test_stage")
+	if err != nil {
+		t.Fatalf("DROP STAGE failed: %v", err)
+	}
+}
+
+func TestDropStageIfExists(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// DROP STAGE IF EXISTS on non-existent stage should succeed
+	_, err := db.Exec("DROP STAGE IF EXISTS nonexistent_stage")
+	if err != nil {
+		t.Fatalf("DROP STAGE IF EXISTS failed: %v", err)
+	}
+}
+
+func TestCopyIntoCSV(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create table
+	_, err := db.Exec("CREATE TABLE copy_test_table (id INTEGER, name VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+
+	// Create temp directory and CSV file
+	tmpDir := t.TempDir()
+	csvPath := tmpDir + "/test_data.csv"
+	csvContent := "1,Alice\n2,Bob\n3,Charlie\n"
+	if err := os.WriteFile(csvPath, []byte(csvContent), 0644); err != nil {
+		t.Fatalf("Failed to write CSV file: %v", err)
+	}
+
+	// Create stage pointing to temp directory
+	stageSQL := fmt.Sprintf("CREATE STAGE copy_csv_stage URL = 'file://%s'", tmpDir)
+	_, err = db.Exec(stageSQL)
+	if err != nil {
+		t.Fatalf("CREATE STAGE failed: %v", err)
+	}
+
+	// Copy into table
+	_, err = db.Exec("COPY INTO copy_test_table FROM @copy_csv_stage/test_data.csv FILE_FORMAT = (TYPE = 'CSV')")
+	if err != nil {
+		t.Fatalf("COPY INTO failed: %v", err)
+	}
+
+	// Verify data
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM copy_test_table").Scan(&count)
+	if err != nil {
+		t.Fatalf("SELECT COUNT(*) failed: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("Expected 3 rows, got %d", count)
+	}
+}
+
+func TestCopyIntoWithSkipHeader(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create table
+	_, err := db.Exec("CREATE TABLE header_test_table (id INTEGER, name VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+
+	// Create temp directory and CSV file with header
+	tmpDir := t.TempDir()
+	csvPath := tmpDir + "/header_data.csv"
+	csvContent := "ID,NAME\n1,Alice\n2,Bob\n"
+	if err := os.WriteFile(csvPath, []byte(csvContent), 0644); err != nil {
+		t.Fatalf("Failed to write CSV file: %v", err)
+	}
+
+	// Create stage
+	stageSQL := fmt.Sprintf("CREATE STAGE header_csv_stage URL = 'file://%s'", tmpDir)
+	_, err = db.Exec(stageSQL)
+	if err != nil {
+		t.Fatalf("CREATE STAGE failed: %v", err)
+	}
+
+	// Copy with SKIP_HEADER
+	_, err = db.Exec("COPY INTO header_test_table FROM @header_csv_stage/header_data.csv FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1)")
+	if err != nil {
+		t.Fatalf("COPY INTO with SKIP_HEADER failed: %v", err)
+	}
+
+	// Verify data - should have 2 rows (excluding header)
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM header_test_table").Scan(&count)
+	if err != nil {
+		t.Fatalf("SELECT COUNT(*) failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("Expected 2 rows, got %d", count)
+	}
+
+	// Verify first row
+	var id int
+	var name string
+	err = db.QueryRow("SELECT id, name FROM header_test_table ORDER BY id LIMIT 1").Scan(&id, &name)
+	if err != nil {
+		t.Fatalf("SELECT failed: %v", err)
+	}
+	if id != 1 || name != "Alice" {
+		t.Errorf("Expected (1, Alice), got (%d, %s)", id, name)
 	}
 }
