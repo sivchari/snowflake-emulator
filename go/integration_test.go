@@ -3553,3 +3553,104 @@ func TestInformationSchemaSchemata(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateDatabase(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create database
+	_, err := db.Exec("CREATE DATABASE go_test_database")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE failed: %v", err)
+	}
+
+	// Verify it exists in SHOW DATABASES
+	rows, err := db.Query("SHOW DATABASES")
+	if err != nil {
+		t.Fatalf("SHOW DATABASES failed: %v", err)
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var dbName string
+		if err := rows.Scan(&dbName); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if dbName == "GO_TEST_DATABASE" {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Error("Created database 'GO_TEST_DATABASE' not found in SHOW DATABASES")
+	}
+}
+
+func TestDropDatabase(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create database first
+	_, err := db.Exec("CREATE DATABASE drop_test_db")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE failed: %v", err)
+	}
+
+	// Drop database
+	_, err = db.Exec("DROP DATABASE drop_test_db")
+	if err != nil {
+		t.Fatalf("DROP DATABASE failed: %v", err)
+	}
+
+	// Verify it no longer exists
+	rows, err := db.Query("SHOW DATABASES")
+	if err != nil {
+		t.Fatalf("SHOW DATABASES failed: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var dbName string
+		if err := rows.Scan(&dbName); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if dbName == "DROP_TEST_DB" {
+			t.Error("Dropped database 'DROP_TEST_DB' still exists in SHOW DATABASES")
+		}
+	}
+}
+
+func TestDropDatabaseIfExists(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Drop non-existent database with IF EXISTS - should succeed
+	_, err := db.Exec("DROP DATABASE IF EXISTS nonexistent_database_xyz")
+	if err != nil {
+		t.Fatalf("DROP DATABASE IF EXISTS failed: %v", err)
+	}
+}
+
+func TestCreateSchema(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create schema
+	_, err := db.Exec("CREATE SCHEMA my_test_schema")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA failed: %v", err)
+	}
+}
+
+func TestDropSchema(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Drop schema
+	_, err := db.Exec("DROP SCHEMA IF EXISTS my_test_schema")
+	if err != nil {
+		t.Fatalf("DROP SCHEMA failed: %v", err)
+	}
+}
