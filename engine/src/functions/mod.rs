@@ -77,6 +77,10 @@
 //! - `ARRAY_AGG(value)` - Collect values into JSON array
 //! - `OBJECT_AGG(key, value)` - Collect key-value pairs into JSON object
 //! - `LISTAGG(value, delimiter)` - Concatenate values with delimiter
+//!
+//! ### Window Functions
+//! - `CONDITIONAL_TRUE_EVENT(condition)` - Counter increments when condition is TRUE
+//! - `CONDITIONAL_CHANGE_EVENT(expr)` - Counter increments when value changes
 
 mod aggregate;
 mod array;
@@ -92,6 +96,7 @@ mod object;
 mod string;
 mod try_functions;
 mod type_check;
+mod window;
 
 // Conditional functions
 pub use conditional::{decode, iff, nvl, nvl2};
@@ -144,3 +149,6 @@ pub use hash::{sha1_hex, sha2};
 pub use context::{
     current_database, current_role, current_schema, current_user, current_warehouse,
 };
+
+// Window functions
+pub use window::{conditional_change_event, conditional_true_event};
