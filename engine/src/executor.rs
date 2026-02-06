@@ -282,6 +282,12 @@ impl Executor {
             return self.handle_use(sql, statement_handle);
         }
 
+        // Handle CURRENT_DATABASE() and CURRENT_SCHEMA() context functions
+        // These need special handling to return the session state
+        if sql_upper.contains("CURRENT_DATABASE()") || sql_upper.contains("CURRENT_SCHEMA()") {
+            return self.handle_context_function(sql, statement_handle);
+        }
+
         // Rewrite Snowflake-specific SQL constructs
         let rewritten_sql = sql_rewriter::rewrite(sql);
 
@@ -1545,6 +1551,51 @@ impl Executor {
     /// Get current schema name
     pub fn get_current_schema(&self) -> String {
         self.current_schema.read().unwrap().clone()
+    }
+
+    /// Handle context function queries (CURRENT_DATABASE, CURRENT_SCHEMA)
+    ///
+    /// These functions need to return the session state values, not hardcoded defaults.
+    fn handle_context_function(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let sql_upper = sql.trim().to_uppercase();
+
+        // Handle SELECT CURRENT_DATABASE()
+        if sql_upper.contains("CURRENT_DATABASE()") {
+            let db_name = self.get_current_database();
+            let columns = vec![ColumnMetaData {
+                name: "CURRENT_DATABASE()".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            }];
+            let data = vec![vec![Some(db_name)]];
+            return Ok(StatementResponse::success(data, columns, statement_handle));
+        }
+
+        // Handle SELECT CURRENT_SCHEMA()
+        if sql_upper.contains("CURRENT_SCHEMA()") {
+            let schema_name = self.get_current_schema();
+            let columns = vec![ColumnMetaData {
+                name: "CURRENT_SCHEMA()".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            }];
+            let data = vec![vec![Some(schema_name)]];
+            return Ok(StatementResponse::success(data, columns, statement_handle));
+        }
+
+        Err(crate::error::Error::ExecutionError(
+            "Unknown context function".to_string(),
+        ))
     }
 
     /// Convert Snowflake type string to Arrow DataType

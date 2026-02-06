@@ -2695,3 +2695,448 @@ func TestRatioToReport(t *testing.T) {
 		i++
 	}
 }
+
+// =============================================================================
+// Phase 9: DML/DDL Operations Tests
+// =============================================================================
+
+func TestUpdateStatement(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE test_update (id INT, name VARCHAR, value INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_update")
+
+	_, err = db.Exec("INSERT INTO test_update VALUES (1, 'Alice', 100), (2, 'Bob', 200), (3, 'Charlie', 300)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Update all rows
+	_, err = db.Exec("UPDATE test_update SET value = value + 10")
+	if err != nil {
+		t.Fatalf("UPDATE failed: %v", err)
+	}
+
+	// Verify update
+	var total int
+	err = db.QueryRow("SELECT SUM(value) FROM test_update").Scan(&total)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// 100+10 + 200+10 + 300+10 = 630
+	if total != 630 {
+		t.Errorf("Expected total 630, got %d", total)
+	}
+}
+
+func TestUpdateWithWhere(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE test_update_where (id INT, status VARCHAR, amount INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_update_where")
+
+	_, err = db.Exec("INSERT INTO test_update_where VALUES (1, 'active', 100), (2, 'inactive', 200), (3, 'active', 300)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Update only active rows
+	_, err = db.Exec("UPDATE test_update_where SET amount = amount * 2 WHERE status = 'active'")
+	if err != nil {
+		t.Fatalf("UPDATE with WHERE failed: %v", err)
+	}
+
+	// Verify: active rows doubled, inactive unchanged
+	rows, err := db.Query("SELECT id, amount FROM test_update_where ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := []int{200, 200, 600} // 100*2, 200 (unchanged), 300*2
+	i := 0
+	for rows.Next() {
+		var id, amount int
+		if err := rows.Scan(&id, &amount); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if amount != expected[i] {
+			t.Errorf("Row %d: expected amount %d, got %d", i+1, expected[i], amount)
+		}
+		i++
+	}
+}
+
+func TestDeleteStatement(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE test_delete (id INT, name VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_delete")
+
+	_, err = db.Exec("INSERT INTO test_delete VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Delete one row
+	_, err = db.Exec("DELETE FROM test_delete WHERE id = 2")
+	if err != nil {
+		t.Fatalf("DELETE failed: %v", err)
+	}
+
+	// Verify deletion
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM test_delete").Scan(&count)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if count != 2 {
+		t.Errorf("Expected 2 rows remaining, got %d", count)
+	}
+
+	// Verify Bob is gone
+	rows, err := db.Query("SELECT name FROM test_delete ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		names = append(names, name)
+	}
+
+	if len(names) != 2 || names[0] != "Alice" || names[1] != "Charlie" {
+		t.Errorf("Expected [Alice, Charlie], got %v", names)
+	}
+}
+
+func TestDeleteAll(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE test_delete_all (id INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_delete_all")
+
+	_, err = db.Exec("INSERT INTO test_delete_all VALUES (1), (2), (3)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Delete all rows (no WHERE clause)
+	_, err = db.Exec("DELETE FROM test_delete_all")
+	if err != nil {
+		t.Fatalf("DELETE ALL failed: %v", err)
+	}
+
+	// Verify table is empty
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM test_delete_all").Scan(&count)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if count != 0 {
+		t.Errorf("Expected 0 rows, got %d", count)
+	}
+}
+
+func TestTruncateTable(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create and populate table
+	_, err := db.Exec("CREATE TABLE test_truncate (id INT, data VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_truncate")
+
+	_, err = db.Exec("INSERT INTO test_truncate VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Truncate table
+	_, err = db.Exec("TRUNCATE TABLE test_truncate")
+	if err != nil {
+		t.Fatalf("TRUNCATE TABLE failed: %v", err)
+	}
+
+	// Verify table is empty
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM test_truncate").Scan(&count)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if count != 0 {
+		t.Errorf("Expected 0 rows after TRUNCATE, got %d", count)
+	}
+
+	// Verify we can still insert (schema preserved)
+	_, err = db.Exec("INSERT INTO test_truncate VALUES (4, 'd')")
+	if err != nil {
+		t.Fatalf("INSERT after TRUNCATE failed: %v", err)
+	}
+}
+
+func TestAlterTableAddColumn(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create table
+	_, err := db.Exec("CREATE TABLE test_alter_add (id INT, name VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_alter_add")
+
+	_, err = db.Exec("INSERT INTO test_alter_add VALUES (1, 'Alice'), (2, 'Bob')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Add column
+	_, err = db.Exec("ALTER TABLE test_alter_add ADD COLUMN age INT")
+	if err != nil {
+		t.Fatalf("ALTER TABLE ADD COLUMN failed: %v", err)
+	}
+
+	// Verify new column exists (should be NULL for existing rows)
+	rows, err := db.Query("SELECT id, name, age FROM test_alter_add ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int
+		var name string
+		var age sql.NullInt64
+		if err := rows.Scan(&id, &name, &age); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		if age.Valid {
+			t.Errorf("Expected NULL age for existing rows, got %d", age.Int64)
+		}
+	}
+}
+
+func TestAlterTableDropColumn(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create table with 3 columns
+	_, err := db.Exec("CREATE TABLE test_alter_drop (id INT, name VARCHAR, extra VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_alter_drop")
+
+	_, err = db.Exec("INSERT INTO test_alter_drop VALUES (1, 'Alice', 'x'), (2, 'Bob', 'y')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Drop column
+	_, err = db.Exec("ALTER TABLE test_alter_drop DROP COLUMN extra")
+	if err != nil {
+		t.Fatalf("ALTER TABLE DROP COLUMN failed: %v", err)
+	}
+
+	// Verify column is gone - should only have 2 columns now
+	rows, err := db.Query("SELECT id, name FROM test_alter_drop ORDER BY id")
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var id int
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		count++
+	}
+
+	if count != 2 {
+		t.Errorf("Expected 2 rows, got %d", count)
+	}
+}
+
+func TestAlterTableRenameColumn(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create table
+	_, err := db.Exec("CREATE TABLE test_alter_rename_col (id INT, old_name VARCHAR)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE test_alter_rename_col")
+
+	_, err = db.Exec("INSERT INTO test_alter_rename_col VALUES (1, 'Alice')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Rename column
+	_, err = db.Exec("ALTER TABLE test_alter_rename_col RENAME COLUMN old_name TO new_name")
+	if err != nil {
+		t.Fatalf("ALTER TABLE RENAME COLUMN failed: %v", err)
+	}
+
+	// Verify new column name works
+	var name string
+	err = db.QueryRow("SELECT new_name FROM test_alter_rename_col WHERE id = 1").Scan(&name)
+	if err != nil {
+		t.Fatalf("Query with new column name failed: %v", err)
+	}
+
+	if name != "Alice" {
+		t.Errorf("Expected 'Alice', got '%s'", name)
+	}
+}
+
+func TestAlterTableRenameTable(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Create table
+	_, err := db.Exec("CREATE TABLE old_table_name (id INT, value INT)")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer db.Exec("DROP TABLE new_table_name")
+
+	_, err = db.Exec("INSERT INTO old_table_name VALUES (1, 100)")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+
+	// Rename table
+	_, err = db.Exec("ALTER TABLE old_table_name RENAME TO new_table_name")
+	if err != nil {
+		t.Fatalf("ALTER TABLE RENAME TO failed: %v", err)
+	}
+
+	// Verify new table name works
+	var value int
+	err = db.QueryRow("SELECT value FROM new_table_name WHERE id = 1").Scan(&value)
+	if err != nil {
+		t.Fatalf("Query with new table name failed: %v", err)
+	}
+
+	if value != 100 {
+		t.Errorf("Expected 100, got %d", value)
+	}
+
+	// Verify old table name no longer exists
+	_, err = db.Query("SELECT * FROM old_table_name")
+	if err == nil {
+		t.Error("Expected error querying old table name, but got none")
+	}
+}
+
+func TestUseDatabase(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Execute USE DATABASE
+	_, err := db.Exec("USE DATABASE my_database")
+	if err != nil {
+		t.Fatalf("USE DATABASE failed: %v", err)
+	}
+
+	// Verify CURRENT_DATABASE() reflects the change
+	var dbName string
+	err = db.QueryRow("SELECT CURRENT_DATABASE()").Scan(&dbName)
+	if err != nil {
+		t.Fatalf("Query CURRENT_DATABASE() failed: %v", err)
+	}
+
+	if dbName != "MY_DATABASE" {
+		t.Errorf("Expected 'MY_DATABASE', got '%s'", dbName)
+	}
+}
+
+func TestUseSchema(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Execute USE SCHEMA
+	_, err := db.Exec("USE SCHEMA my_schema")
+	if err != nil {
+		t.Fatalf("USE SCHEMA failed: %v", err)
+	}
+
+	// Verify CURRENT_SCHEMA() reflects the change
+	var schemaName string
+	err = db.QueryRow("SELECT CURRENT_SCHEMA()").Scan(&schemaName)
+	if err != nil {
+		t.Fatalf("Query CURRENT_SCHEMA() failed: %v", err)
+	}
+
+	if schemaName != "MY_SCHEMA" {
+		t.Errorf("Expected 'MY_SCHEMA', got '%s'", schemaName)
+	}
+}
+
+func TestUseQualifiedName(t *testing.T) {
+	db := getDB(t)
+	defer db.Close()
+
+	// Execute USE with database.schema
+	_, err := db.Exec("USE test_db.test_schema")
+	if err != nil {
+		t.Fatalf("USE database.schema failed: %v", err)
+	}
+
+	// Verify both are set
+	var dbName, schemaName string
+	err = db.QueryRow("SELECT CURRENT_DATABASE()").Scan(&dbName)
+	if err != nil {
+		t.Fatalf("Query CURRENT_DATABASE() failed: %v", err)
+	}
+
+	err = db.QueryRow("SELECT CURRENT_SCHEMA()").Scan(&schemaName)
+	if err != nil {
+		t.Fatalf("Query CURRENT_SCHEMA() failed: %v", err)
+	}
+
+	if dbName != "TEST_DB" {
+		t.Errorf("Expected database 'TEST_DB', got '%s'", dbName)
+	}
+
+	if schemaName != "TEST_SCHEMA" {
+		t.Errorf("Expected schema 'TEST_SCHEMA', got '%s'", schemaName)
+	}
+}

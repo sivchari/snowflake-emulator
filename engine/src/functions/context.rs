@@ -33,7 +33,7 @@ impl Default for CurrentUserFunc {
 impl CurrentUserFunc {
     pub fn new() -> Self {
         Self {
-            signature: Signature::new(TypeSignature::Any(0), Volatility::Stable),
+            signature: Signature::new(TypeSignature::Nullary, Volatility::Stable),
         }
     }
 }
@@ -93,7 +93,7 @@ impl Default for CurrentRoleFunc {
 impl CurrentRoleFunc {
     pub fn new() -> Self {
         Self {
-            signature: Signature::new(TypeSignature::Any(0), Volatility::Stable),
+            signature: Signature::new(TypeSignature::Nullary, Volatility::Stable),
         }
     }
 }
@@ -153,7 +153,7 @@ impl Default for CurrentDatabaseFunc {
 impl CurrentDatabaseFunc {
     pub fn new() -> Self {
         Self {
-            signature: Signature::new(TypeSignature::Any(0), Volatility::Stable),
+            signature: Signature::new(TypeSignature::Nullary, Volatility::Stable),
         }
     }
 }
@@ -213,7 +213,7 @@ impl Default for CurrentSchemaFunc {
 impl CurrentSchemaFunc {
     pub fn new() -> Self {
         Self {
-            signature: Signature::new(TypeSignature::Any(0), Volatility::Stable),
+            signature: Signature::new(TypeSignature::Nullary, Volatility::Stable),
         }
     }
 }
@@ -273,7 +273,7 @@ impl Default for CurrentWarehouseFunc {
 impl CurrentWarehouseFunc {
     pub fn new() -> Self {
         Self {
-            signature: Signature::new(TypeSignature::Any(0), Volatility::Stable),
+            signature: Signature::new(TypeSignature::Nullary, Volatility::Stable),
         }
     }
 }
