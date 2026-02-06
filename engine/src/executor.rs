@@ -304,7 +304,8 @@ impl Executor {
         }
 
         // Handle CREATE STAGE
-        if sql_upper.starts_with("CREATE STAGE ") || sql_upper.starts_with("CREATE OR REPLACE STAGE ")
+        if sql_upper.starts_with("CREATE STAGE ")
+            || sql_upper.starts_with("CREATE OR REPLACE STAGE ")
         {
             return self.handle_create_stage(sql, statement_handle);
         }
@@ -1781,13 +1782,12 @@ impl Executor {
                 let table_schema = batches[0].schema();
 
                 // Recreate the table with snapshot data
-                let mem_table =
-                    MemTable::try_new(table_schema, vec![batches]).map_err(|e| {
-                        crate::error::Error::ExecutionError(format!(
-                            "Failed to restore table {}: {}",
-                            table_name, e
-                        ))
-                    })?;
+                let mem_table = MemTable::try_new(table_schema, vec![batches]).map_err(|e| {
+                    crate::error::Error::ExecutionError(format!(
+                        "Failed to restore table {}: {}",
+                        table_name, e
+                    ))
+                })?;
 
                 // Re-register the table
                 self.ctx
@@ -2061,12 +2061,18 @@ impl Executor {
         } else if path_obj.is_dir() {
             let mut files = Vec::new();
             let entries = std::fs::read_dir(path).map_err(|e| {
-                crate::error::Error::ExecutionError(format!("Failed to read directory {}: {}", path, e))
+                crate::error::Error::ExecutionError(format!(
+                    "Failed to read directory {}: {}",
+                    path, e
+                ))
             })?;
 
             for entry in entries {
                 let entry = entry.map_err(|e| {
-                    crate::error::Error::ExecutionError(format!("Failed to read directory entry: {}", e))
+                    crate::error::Error::ExecutionError(format!(
+                        "Failed to read directory entry: {}",
+                        e
+                    ))
                 })?;
                 let file_path = entry.path();
                 if file_path.is_file() {
@@ -2139,7 +2145,10 @@ impl Executor {
                 .collect();
 
             let values_str = values.join(", ");
-            let insert_sql = format!("INSERT INTO {} ({}) VALUES ({})", table_name, columns_str, values_str);
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                table_name, columns_str, values_str
+            );
 
             // Execute the INSERT
             self.ctx
@@ -4763,7 +4772,10 @@ mod tests {
             .unwrap();
         let data = response.data.unwrap();
         assert!(data[0][0].as_ref().unwrap().contains("MY_STAGE"));
-        assert!(data[0][0].as_ref().unwrap().contains("successfully created"));
+        assert!(data[0][0]
+            .as_ref()
+            .unwrap()
+            .contains("successfully created"));
     }
 
     #[tokio::test]
@@ -4850,7 +4862,9 @@ mod tests {
 
         // Copy into table
         let response = executor
-            .execute("COPY INTO csv_test FROM @csv_stage/copy_test.csv FILE_FORMAT = (TYPE = 'CSV')")
+            .execute(
+                "COPY INTO csv_test FROM @csv_stage/copy_test.csv FILE_FORMAT = (TYPE = 'CSV')",
+            )
             .await
             .unwrap();
         let data = response.data.unwrap();
