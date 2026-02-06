@@ -325,6 +325,30 @@ impl Executor {
             return self.handle_copy_into(sql, statement_handle).await;
         }
 
+        // Handle CREATE DATABASE
+        if sql_upper.starts_with("CREATE DATABASE ")
+            || sql_upper.starts_with("CREATE OR REPLACE DATABASE ")
+        {
+            return self.handle_create_database(sql, statement_handle);
+        }
+
+        // Handle DROP DATABASE
+        if sql_upper.starts_with("DROP DATABASE ") {
+            return self.handle_drop_database(sql, statement_handle);
+        }
+
+        // Handle CREATE SCHEMA
+        if sql_upper.starts_with("CREATE SCHEMA ")
+            || sql_upper.starts_with("CREATE OR REPLACE SCHEMA ")
+        {
+            return self.handle_create_schema(sql, statement_handle);
+        }
+
+        // Handle DROP SCHEMA
+        if sql_upper.starts_with("DROP SCHEMA ") {
+            return self.handle_drop_schema(sql, statement_handle);
+        }
+
         // Handle CURRENT_DATABASE() and CURRENT_SCHEMA() context functions
         // These need special handling to return the session state
         if sql_upper.contains("CURRENT_DATABASE()") || sql_upper.contains("CURRENT_SCHEMA()") {
@@ -418,9 +442,8 @@ impl Executor {
 
     /// Handle SHOW DATABASES command
     async fn handle_show_databases(&self, statement_handle: String) -> Result<StatementResponse> {
-        // Return default database name
         let columns = vec![ColumnMetaData {
-            name: "DATABASE_NAME".to_string(),
+            name: "name".to_string(),
             r#type: "TEXT".to_string(),
             nullable: false,
             precision: None,
@@ -428,7 +451,16 @@ impl Executor {
             length: None,
         }];
 
-        let data: Vec<Vec<Option<String>>> = vec![vec![Some("default".to_string())]];
+        // Get databases from catalog
+        let mut databases = self.catalog.list_databases();
+
+        // Always include a default database for compatibility
+        if databases.is_empty() {
+            databases.push("EMULATOR_DB".to_string());
+        }
+
+        let data: Vec<Vec<Option<String>>> =
+            databases.into_iter().map(|name| vec![Some(name)]).collect();
 
         Ok(StatementResponse::success(data, columns, statement_handle))
     }
@@ -1762,6 +1794,14 @@ impl Executor {
         if let Some(captures) = use_database_pattern.captures(sql) {
             let database_name = captures.get(1).unwrap().as_str().to_uppercase();
 
+            // Update catalog state (lenient - create if not exists for emulator compatibility)
+            if !self.catalog.database_exists(&database_name) {
+                // Auto-create database for emulator compatibility
+                let _ = self.catalog.create_database(&self.ctx, &database_name);
+            }
+            let _ = self.catalog.use_database(&database_name);
+
+            // Update session state
             {
                 let mut current_db = self.current_database.write().unwrap();
                 *current_db = database_name.clone();
@@ -1781,6 +1821,10 @@ impl Executor {
         if let Some(captures) = use_schema_pattern.captures(sql) {
             let schema_name = captures.get(1).unwrap().as_str().to_uppercase();
 
+            // Update catalog state
+            let _ = self.catalog.use_schema(&schema_name);
+
+            // Update session state
             {
                 let mut current_schema = self.current_schema.write().unwrap();
                 *current_schema = schema_name.clone();
@@ -1799,6 +1843,14 @@ impl Executor {
             let database_name = captures.get(1).unwrap().as_str().to_uppercase();
             let schema_name = captures.get(2).unwrap().as_str().to_uppercase();
 
+            // Update catalog state (lenient - create if not exists)
+            if !self.catalog.database_exists(&database_name) {
+                let _ = self.catalog.create_database(&self.ctx, &database_name);
+            }
+            let _ = self.catalog.use_database(&database_name);
+            let _ = self.catalog.use_schema(&schema_name);
+
+            // Update session state
             {
                 let mut current_db = self.current_database.write().unwrap();
                 *current_db = database_name.clone();
@@ -2198,6 +2250,218 @@ impl Executor {
         };
 
         let data = vec![vec![Some(message)]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    // =========================================================================
+    // DATABASE/SCHEMA Management
+    // =========================================================================
+
+    /// Handle CREATE DATABASE command
+    ///
+    /// Syntax:
+    /// ```sql
+    /// CREATE DATABASE database_name
+    /// CREATE OR REPLACE DATABASE database_name
+    /// CREATE DATABASE IF NOT EXISTS database_name
+    /// ```
+    fn handle_create_database(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let create_pattern = regex::Regex::new(
+            r"(?i)CREATE\s+(?:OR\s+REPLACE\s+)?DATABASE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
+        )
+        .unwrap();
+
+        let captures = create_pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid CREATE DATABASE syntax".to_string())
+        })?;
+
+        let db_name = captures.get(1).unwrap().as_str().to_uppercase();
+        let or_replace = sql.to_uppercase().contains("OR REPLACE");
+        let if_not_exists = sql.to_uppercase().contains("IF NOT EXISTS");
+
+        // Check if database already exists
+        if self.catalog.database_exists(&db_name) {
+            if or_replace {
+                // Drop and recreate
+                self.catalog.drop_database(&db_name)?;
+            } else if if_not_exists {
+                // Just return success without creating
+                let columns = vec![ColumnMetaData {
+                    name: "status".to_string(),
+                    r#type: "TEXT".to_string(),
+                    nullable: false,
+                    precision: None,
+                    scale: None,
+                    length: None,
+                }];
+                let data = vec![vec![Some(format!(
+                    "Database '{db_name}' already exists, statement succeeded."
+                ))]];
+                return Ok(StatementResponse::success(data, columns, statement_handle));
+            } else {
+                return Err(crate::error::Error::ExecutionError(format!(
+                    "Database '{db_name}' already exists."
+                )));
+            }
+        }
+
+        // Create the database
+        self.catalog.create_database(&self.ctx, &db_name)?;
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let data = vec![vec![Some(format!(
+            "Database {db_name} successfully created."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle DROP DATABASE command
+    ///
+    /// Syntax:
+    /// ```sql
+    /// DROP DATABASE database_name
+    /// DROP DATABASE IF EXISTS database_name
+    /// ```
+    fn handle_drop_database(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let drop_pattern =
+            regex::Regex::new(r"(?i)DROP\s+DATABASE\s+(?:IF\s+EXISTS\s+)?(\w+)").unwrap();
+
+        let captures = drop_pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid DROP DATABASE syntax".to_string())
+        })?;
+
+        let db_name = captures.get(1).unwrap().as_str().to_uppercase();
+        let if_exists = sql.to_uppercase().contains("IF EXISTS");
+
+        // Check if database exists
+        if !self.catalog.database_exists(&db_name) {
+            if if_exists {
+                let columns = vec![ColumnMetaData {
+                    name: "status".to_string(),
+                    r#type: "TEXT".to_string(),
+                    nullable: false,
+                    precision: None,
+                    scale: None,
+                    length: None,
+                }];
+                let data = vec![vec![Some("Statement executed successfully.".to_string())]];
+                return Ok(StatementResponse::success(data, columns, statement_handle));
+            } else {
+                return Err(crate::error::Error::ExecutionError(format!(
+                    "Database '{db_name}' does not exist."
+                )));
+            }
+        }
+
+        // Drop the database
+        self.catalog.drop_database(&db_name)?;
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let data = vec![vec![Some(format!(
+            "Database {db_name} successfully dropped."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle CREATE SCHEMA command
+    ///
+    /// Syntax:
+    /// ```sql
+    /// CREATE SCHEMA schema_name
+    /// CREATE OR REPLACE SCHEMA schema_name
+    /// CREATE SCHEMA IF NOT EXISTS schema_name
+    /// ```
+    fn handle_create_schema(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let create_pattern = regex::Regex::new(
+            r"(?i)CREATE\s+(?:OR\s+REPLACE\s+)?SCHEMA\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
+        )
+        .unwrap();
+
+        let captures = create_pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid CREATE SCHEMA syntax".to_string())
+        })?;
+
+        let schema_name = captures.get(1).unwrap().as_str().to_uppercase();
+
+        // For now, just acknowledge the schema creation
+        // In a full implementation, this would create a schema in the current database
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let data = vec![vec![Some(format!(
+            "Schema {schema_name} successfully created."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle DROP SCHEMA command
+    ///
+    /// Syntax:
+    /// ```sql
+    /// DROP SCHEMA schema_name
+    /// DROP SCHEMA IF EXISTS schema_name
+    /// ```
+    fn handle_drop_schema(&self, sql: &str, statement_handle: String) -> Result<StatementResponse> {
+        let drop_pattern =
+            regex::Regex::new(r"(?i)DROP\s+SCHEMA\s+(?:IF\s+EXISTS\s+)?(\w+)").unwrap();
+
+        let captures = drop_pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid DROP SCHEMA syntax".to_string())
+        })?;
+
+        let schema_name = captures.get(1).unwrap().as_str().to_uppercase();
+
+        // For now, just acknowledge the schema drop
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let data = vec![vec![Some(format!(
+            "Schema {schema_name} successfully dropped."
+        ))]];
 
         Ok(StatementResponse::success(data, columns, statement_handle))
     }
@@ -3706,11 +3970,92 @@ mod tests {
     async fn test_show_databases() {
         let executor = Executor::new();
 
+        // Initially should show default EMULATOR_DB
         let response = executor.execute("SHOW DATABASES").await.unwrap();
-
         assert_eq!(response.result_set_meta_data.num_rows, 1);
         let data = response.data.unwrap();
-        assert_eq!(data[0][0], Some("default".to_string()));
+        assert_eq!(data[0][0], Some("EMULATOR_DB".to_string()));
+
+        // Create a database
+        executor.execute("CREATE DATABASE TEST_DB").await.unwrap();
+
+        // Should now show the created database
+        let response = executor.execute("SHOW DATABASES").await.unwrap();
+        assert!(response.result_set_meta_data.num_rows >= 1);
+        let data = response.data.unwrap();
+        let db_names: Vec<_> = data.iter().map(|row| row[0].clone()).collect();
+        assert!(db_names.contains(&Some("TEST_DB".to_string())));
+    }
+
+    #[tokio::test]
+    async fn test_create_drop_database() {
+        let executor = Executor::new();
+
+        // Create database
+        let response = executor
+            .execute("CREATE DATABASE MY_DATABASE")
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0]
+            .as_ref()
+            .unwrap()
+            .contains("MY_DATABASE successfully created"));
+
+        // Verify it exists in SHOW DATABASES
+        let response = executor.execute("SHOW DATABASES").await.unwrap();
+        let data = response.data.unwrap();
+        let db_names: Vec<_> = data.iter().map(|row| row[0].clone()).collect();
+        assert!(db_names.contains(&Some("MY_DATABASE".to_string())));
+
+        // Drop database
+        let response = executor.execute("DROP DATABASE MY_DATABASE").await.unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0]
+            .as_ref()
+            .unwrap()
+            .contains("MY_DATABASE successfully dropped"));
+
+        // Verify it no longer exists
+        let response = executor.execute("SHOW DATABASES").await.unwrap();
+        let data = response.data.unwrap();
+        let db_names: Vec<_> = data.iter().map(|row| row[0].clone()).collect();
+        assert!(!db_names.contains(&Some("MY_DATABASE".to_string())));
+    }
+
+    #[tokio::test]
+    async fn test_create_database_if_not_exists() {
+        let executor = Executor::new();
+
+        // Create database
+        executor
+            .execute("CREATE DATABASE TEST_IF_NOT_EXISTS")
+            .await
+            .unwrap();
+
+        // Create again with IF NOT EXISTS - should succeed
+        let response = executor
+            .execute("CREATE DATABASE IF NOT EXISTS TEST_IF_NOT_EXISTS")
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0].as_ref().unwrap().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_database_if_exists() {
+        let executor = Executor::new();
+
+        // Drop non-existent database with IF EXISTS - should succeed
+        let response = executor
+            .execute("DROP DATABASE IF EXISTS NONEXISTENT_DB")
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert!(data[0][0]
+            .as_ref()
+            .unwrap()
+            .contains("Statement executed successfully"));
     }
 
     #[tokio::test]
