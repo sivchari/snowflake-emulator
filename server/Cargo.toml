@@ -17,6 +17,8 @@ tracing-subscriber.workspace = true
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+parking_lot = "0.12"
+tokio-util = "0.7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
