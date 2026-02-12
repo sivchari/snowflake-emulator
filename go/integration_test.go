@@ -3486,13 +3486,17 @@ func TestInformationSchemaColumns(t *testing.T) {
 	}
 	defer rows.Close()
 
+	// Note: The emulator returns DataFusion type names:
+	// - INTEGER -> FIXED
+	// - VARCHAR -> TEXT
+	// - BOOLEAN -> BOOLEAN
 	expectedColumns := []struct {
 		name     string
 		dataType string
 		position int
 	}{
-		{"id", "INTEGER", 1},
-		{"name", "VARCHAR", 2},
+		{"id", "FIXED", 1},
+		{"name", "TEXT", 2},
 		{"active", "BOOLEAN", 3},
 	}
 
