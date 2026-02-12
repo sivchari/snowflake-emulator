@@ -2,6 +2,8 @@
 //!
 //! Snowflake-compatible SQL execution engine based on DataFusion
 
+#![allow(clippy::uninlined_format_args)]
+
 pub mod catalog;
 pub mod error;
 pub mod executor;

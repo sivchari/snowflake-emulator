@@ -2116,10 +2116,10 @@ impl Executor {
                 // Re-register the table
                 self.ctx
                     .deregister_table(&table_name)
-                    .map_err(|e| crate::error::Error::DataFusion(e))?;
+                    .map_err(crate::error::Error::DataFusion)?;
                 self.ctx
                     .register_table(&table_name, Arc::new(mem_table))
-                    .map_err(|e| crate::error::Error::DataFusion(e))?;
+                    .map_err(crate::error::Error::DataFusion)?;
             }
         }
 
@@ -2545,7 +2545,7 @@ impl Executor {
         let table = schema
             .table(&table_name)
             .await
-            .map_err(|e| crate::error::Error::DataFusion(e))?
+            .map_err(crate::error::Error::DataFusion)?
             .ok_or_else(|| {
                 crate::error::Error::ExecutionError(format!("Table {table_name} does not exist"))
             })?;
@@ -2690,10 +2690,10 @@ impl Executor {
             self.ctx
                 .sql(&insert_sql)
                 .await
-                .map_err(|e| crate::error::Error::DataFusion(e))?
+                .map_err(crate::error::Error::DataFusion)?
                 .collect()
                 .await
-                .map_err(|e| crate::error::Error::DataFusion(e))?;
+                .map_err(crate::error::Error::DataFusion)?;
         }
 
         Ok(num_rows)
