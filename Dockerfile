@@ -13,7 +13,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY cli ./cli
 COPY engine ./engine
 COPY server ./server
-COPY sf ./sf
 
 # Build release binary
 RUN cargo build --release --package server
