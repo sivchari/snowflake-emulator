@@ -14,7 +14,7 @@ thiserror.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 
-arrow = { version = "54", default-features = false }
+arrow = { version = "57", default-features = false }
 async-trait = "0.1"
 parking_lot = "0.12"
 chrono = "0.4"
