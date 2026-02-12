@@ -14,7 +14,7 @@ pub enum AsyncQueryState {
     /// Query is still running
     Running,
     /// Query completed successfully
-    Completed(StatementResponse),
+    Completed(Box<StatementResponse>),
     /// Query failed with error
     Failed { code: String, message: String },
     /// Query was cancelled
@@ -60,7 +60,7 @@ impl AppState {
     /// Update async query state to completed
     pub fn complete_async_query(&self, statement_handle: &str, response: StatementResponse) {
         if let Some(entry) = self.async_queries.write().get_mut(statement_handle) {
-            entry.state = AsyncQueryState::Completed(response);
+            entry.state = AsyncQueryState::Completed(Box::new(response));
         }
     }
 

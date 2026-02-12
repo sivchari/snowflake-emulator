@@ -58,7 +58,7 @@ impl ScalarUDFImpl for ObjectConstructFunc {
 
     fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
         // Arguments should be in pairs: key1, value1, key2, value2, ...
-        if args.len() % 2 != 0 {
+        if !args.len().is_multiple_of(2) {
             return Err(datafusion::error::DataFusionError::Execution(
                 "OBJECT_CONSTRUCT requires an even number of arguments (key-value pairs)"
                     .to_string(),
@@ -135,7 +135,7 @@ impl ScalarUDFImpl for ObjectConstructKeepNullFunc {
     }
 
     fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() % 2 != 0 {
+        if !args.len().is_multiple_of(2) {
             return Err(datafusion::error::DataFusionError::Execution(
                 "OBJECT_CONSTRUCT_KEEP_NULL requires an even number of arguments (key-value pairs)"
                     .to_string(),

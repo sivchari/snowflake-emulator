@@ -1,5 +1,7 @@
 //! Snowflake Emulator Server Library
 
+#![allow(clippy::uninlined_format_args)]
+
 pub mod handlers;
 pub mod state;
 
