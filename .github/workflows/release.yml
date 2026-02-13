@@ -58,7 +58,7 @@ jobs:
           Compress-Archive -Path snowflake-emulator.exe -DestinationPath snowflake-emulator-${{ matrix.target }}.${{ matrix.archive }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: snowflake-emulator-${{ matrix.target }}
           path: dist/snowflake-emulator-${{ matrix.target }}.${{ matrix.archive }}
