@@ -10,17 +10,18 @@
 
 use std::any::Any;
 
-use arrow::datatypes::DataType;
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 // ============================================================================
 // OBJECT_CONSTRUCT(key1, value1, key2, value2, ...)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ObjectConstructFunc {
     signature: Signature,
 }
@@ -56,9 +57,9 @@ impl ScalarUDFImpl for ObjectConstructFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         // Arguments should be in pairs: key1, value1, key2, value2, ...
-        if !args.len().is_multiple_of(2) {
+        if !args.args.len().is_multiple_of(2) {
             return Err(datafusion::error::DataFusionError::Execution(
                 "OBJECT_CONSTRUCT requires an even number of arguments (key-value pairs)"
                     .to_string(),
@@ -67,7 +68,7 @@ impl ScalarUDFImpl for ObjectConstructFunc {
 
         let mut obj = serde_json::Map::new();
 
-        for pair in args.chunks(2) {
+        for pair in args.args.chunks(2) {
             let key = extract_key(&pair[0])?;
             let value = scalar_to_json_value_from_columnar(&pair[1]);
 
@@ -98,7 +99,7 @@ pub fn object_construct() -> ScalarUDF {
 // OBJECT_CONSTRUCT_KEEP_NULL(key1, value1, key2, value2, ...)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ObjectConstructKeepNullFunc {
     signature: Signature,
 }
@@ -134,8 +135,8 @@ impl ScalarUDFImpl for ObjectConstructKeepNullFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if !args.len().is_multiple_of(2) {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if !args.args.len().is_multiple_of(2) {
             return Err(datafusion::error::DataFusionError::Execution(
                 "OBJECT_CONSTRUCT_KEEP_NULL requires an even number of arguments (key-value pairs)"
                     .to_string(),
@@ -144,7 +145,7 @@ impl ScalarUDFImpl for ObjectConstructKeepNullFunc {
 
         let mut obj = serde_json::Map::new();
 
-        for pair in args.chunks(2) {
+        for pair in args.args.chunks(2) {
             let key = extract_key(&pair[0])?;
             let value = scalar_to_json_value_from_columnar(&pair[1]);
 
@@ -172,7 +173,7 @@ pub fn object_construct_keep_null() -> ScalarUDF {
 // OBJECT_INSERT(object, key, value [, update_flag])
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ObjectInsertFunc {
     signature: Signature,
 }
@@ -209,20 +210,20 @@ impl ScalarUDFImpl for ObjectInsertFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() < 3 || args.len() > 4 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() < 3 || args.args.len() > 4 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "OBJECT_INSERT requires 3 or 4 arguments".to_string(),
             ));
         }
 
-        let obj_str = extract_string_scalar(&args[0])?;
-        let key = extract_key(&args[1])?;
-        let value = scalar_to_json_value_from_columnar(&args[2]);
+        let obj_str = extract_string_scalar(&args.args[0])?;
+        let key = extract_key(&args.args[1])?;
+        let value = scalar_to_json_value_from_columnar(&args.args[2]);
 
         // Optional update_flag (default: false - error if key exists)
-        let update_flag = if args.len() == 4 {
-            extract_bool_scalar(&args[3])?.unwrap_or(false)
+        let update_flag = if args.args.len() == 4 {
+            extract_bool_scalar(&args.args[3])?.unwrap_or(false)
         } else {
             false
         };
@@ -262,7 +263,7 @@ pub fn object_insert() -> ScalarUDF {
 // OBJECT_DELETE(object, key1 [, key2, ...])
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ObjectDeleteFunc {
     signature: Signature,
 }
@@ -298,17 +299,17 @@ impl ScalarUDFImpl for ObjectDeleteFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() < 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() < 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "OBJECT_DELETE requires at least 2 arguments (object, key)".to_string(),
             ));
         }
 
-        let obj_str = extract_string_scalar(&args[0])?;
+        let obj_str = extract_string_scalar(&args.args[0])?;
 
         // Collect all keys to delete
-        let keys_to_delete: Vec<String> = args[1..]
+        let keys_to_delete: Vec<String> = args.args[1..]
             .iter()
             .filter_map(|arg| extract_key(arg).ok().flatten())
             .collect();
@@ -342,7 +343,7 @@ pub fn object_delete() -> ScalarUDF {
 // OBJECT_PICK(object, key1 [, key2, ...])
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ObjectPickFunc {
     signature: Signature,
 }
@@ -378,17 +379,17 @@ impl ScalarUDFImpl for ObjectPickFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() < 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() < 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "OBJECT_PICK requires at least 2 arguments (object, key)".to_string(),
             ));
         }
 
-        let obj_str = extract_string_scalar(&args[0])?;
+        let obj_str = extract_string_scalar(&args.args[0])?;
 
         // Collect all keys to pick
-        let keys_to_pick: Vec<String> = args[1..]
+        let keys_to_pick: Vec<String> = args.args[1..]
             .iter()
             .filter_map(|arg| extract_key(arg).ok().flatten())
             .collect();
@@ -491,6 +492,7 @@ fn extract_bool_scalar(col: &ColumnarValue) -> Result<Option<bool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::invoke_udf_string;
 
     #[test]
     fn test_object_construct() {
@@ -501,7 +503,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("b".to_string()))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -521,7 +523,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("b".to_string()))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -539,7 +541,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("{\"a\": 1, \"b\": 2}".to_string()))),
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("a".to_string()))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -560,7 +562,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("a".to_string()))),
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("c".to_string()))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();

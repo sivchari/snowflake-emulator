@@ -8,14 +8,41 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, Int64Array, StringArray};
-use arrow::datatypes::DataType;
+use datafusion::arrow::array::{Array, Int64Array, StringArray, StringViewArray};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 use super::helpers::safe_index;
+
+// ============================================================================
+// Helper to extract string iterator from StringArray or StringViewArray
+// ============================================================================
+
+/// Extract string values from an array that could be StringArray or StringViewArray.
+/// Returns a Vec of Option<String> for easier processing.
+fn extract_strings_from_array(arr: &Arc<dyn Array>) -> Option<Vec<Option<String>>> {
+    if let Some(str_arr) = arr.as_any().downcast_ref::<StringArray>() {
+        Some(
+            str_arr
+                .iter()
+                .map(|opt| opt.map(|s| s.to_string()))
+                .collect(),
+        )
+    } else if let Some(str_arr) = arr.as_any().downcast_ref::<StringViewArray>() {
+        Some(
+            str_arr
+                .iter()
+                .map(|opt| opt.map(|s| s.to_string()))
+                .collect(),
+        )
+    } else {
+        None
+    }
+}
 
 // ============================================================================
 // FLATTEN scalar helper functions
@@ -26,7 +53,7 @@ use super::helpers::safe_index;
 /// This is a helper function that extracts an element from a JSON array.
 /// Syntax: FLATTEN_ARRAY(json_array, index)
 /// Returns the element at the specified index, or NULL if out of bounds.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct FlattenArrayFunc {
     signature: Signature,
 }
@@ -62,15 +89,15 @@ impl ScalarUDFImpl for FlattenArrayFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "FLATTEN_ARRAY requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let array_json = &args[0];
-        let index = &args[1];
+        let array_json = &args.args[0];
+        let index = &args.args[1];
 
         // Handle case when index is an array (from CROSS JOIN)
         match (array_json, index) {
@@ -97,23 +124,20 @@ impl ScalarUDFImpl for FlattenArrayFunc {
                 ColumnarValue::Array(json_arr),
                 ColumnarValue::Scalar(ScalarValue::Int64(idx_opt)),
             ) => {
-                let str_arr = json_arr
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        datafusion::error::DataFusionError::Execution(
-                            "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
-                        )
-                    })?;
+                let strings = extract_strings_from_array(json_arr).ok_or_else(|| {
+                    datafusion::error::DataFusionError::Execution(
+                        "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
+                    )
+                })?;
 
                 let idx = idx_opt.and_then(safe_index);
                 let result: StringArray = if let Some(idx) = idx {
-                    str_arr
+                    strings
                         .iter()
-                        .map(|opt| opt.and_then(|s| extract_array_element(s, idx)))
+                        .map(|opt| opt.as_ref().and_then(|s| extract_array_element(s, idx)))
                         .collect()
                 } else {
-                    str_arr.iter().map(|_| None::<String>).collect()
+                    strings.iter().map(|_| None::<String>).collect()
                 };
 
                 Ok(ColumnarValue::Array(Arc::new(result)))
@@ -147,14 +171,11 @@ impl ScalarUDFImpl for FlattenArrayFunc {
 
             // Both arrays (full row-by-row processing)
             (ColumnarValue::Array(json_arr), ColumnarValue::Array(idx_arr)) => {
-                let str_arr = json_arr
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        datafusion::error::DataFusionError::Execution(
-                            "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
-                        )
-                    })?;
+                let strings = extract_strings_from_array(json_arr).ok_or_else(|| {
+                    datafusion::error::DataFusionError::Execution(
+                        "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
+                    )
+                })?;
 
                 let int_arr = idx_arr
                     .as_any()
@@ -165,7 +186,7 @@ impl ScalarUDFImpl for FlattenArrayFunc {
                         )
                     })?;
 
-                let result: StringArray = str_arr
+                let result: StringArray = strings
                     .iter()
                     .zip(int_arr.iter())
                     .map(|(json_opt, idx_opt)| match (json_opt, idx_opt) {
@@ -181,17 +202,14 @@ impl ScalarUDFImpl for FlattenArrayFunc {
 
             // Handle other cases by converting to arrays
             _ => {
-                let json_arr = array_json.to_array(num_rows)?;
-                let idx_arr = index.to_array(num_rows)?;
+                let json_arr = array_json.to_array(args.number_rows)?;
+                let idx_arr = index.to_array(args.number_rows)?;
 
-                let str_arr = json_arr
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        datafusion::error::DataFusionError::Execution(
-                            "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
-                        )
-                    })?;
+                let strings = extract_strings_from_array(&json_arr).ok_or_else(|| {
+                    datafusion::error::DataFusionError::Execution(
+                        "FLATTEN_ARRAY first argument must be a JSON string".to_string(),
+                    )
+                })?;
 
                 let int_arr = idx_arr
                     .as_any()
@@ -202,7 +220,7 @@ impl ScalarUDFImpl for FlattenArrayFunc {
                         )
                     })?;
 
-                let result: StringArray = str_arr
+                let result: StringArray = strings
                     .iter()
                     .zip(int_arr.iter())
                     .map(|(json_opt, idx_opt)| match (json_opt, idx_opt) {
@@ -243,7 +261,7 @@ pub fn flatten_array() -> ScalarUDF {
 ///
 /// Syntax: ARRAY_SIZE(json_array)
 /// Returns the number of elements in the array.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArraySizeFunc {
     signature: Signature,
 }
@@ -279,14 +297,14 @@ impl ScalarUDFImpl for ArraySizeFunc {
         Ok(DataType::Int64)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ARRAY_SIZE requires exactly 1 argument".to_string(),
             ));
         }
 
-        let array_json = &args[0];
+        let array_json = &args.args[0];
 
         match array_json {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
@@ -297,31 +315,43 @@ impl ScalarUDFImpl for ArraySizeFunc {
                 Ok(ColumnarValue::Scalar(ScalarValue::Int64(None)))
             }
             ColumnarValue::Array(arr) => {
-                let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "ARRAY_SIZE argument must be a JSON string".to_string(),
-                    )
-                })?;
-
-                let result: Int64Array = str_arr
-                    .iter()
-                    .map(|opt| opt.and_then(get_array_size))
-                    .collect();
+                let result: Int64Array =
+                    if let Some(str_arr) = arr.as_any().downcast_ref::<StringArray>() {
+                        str_arr
+                            .iter()
+                            .map(|opt| opt.and_then(get_array_size))
+                            .collect()
+                    } else if let Some(str_arr) = arr.as_any().downcast_ref::<StringViewArray>() {
+                        str_arr
+                            .iter()
+                            .map(|opt| opt.and_then(get_array_size))
+                            .collect()
+                    } else {
+                        return Err(datafusion::error::DataFusionError::Execution(
+                            "ARRAY_SIZE argument must be a JSON string".to_string(),
+                        ));
+                    };
 
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
             _ => {
-                let arr = array_json.to_array(num_rows)?;
-                let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "ARRAY_SIZE argument must be a JSON string".to_string(),
-                    )
-                })?;
-
-                let result: Int64Array = str_arr
-                    .iter()
-                    .map(|opt| opt.and_then(get_array_size))
-                    .collect();
+                let arr = array_json.to_array(args.number_rows)?;
+                let result: Int64Array =
+                    if let Some(str_arr) = arr.as_any().downcast_ref::<StringArray>() {
+                        str_arr
+                            .iter()
+                            .map(|opt| opt.and_then(get_array_size))
+                            .collect()
+                    } else if let Some(str_arr) = arr.as_any().downcast_ref::<StringViewArray>() {
+                        str_arr
+                            .iter()
+                            .map(|opt| opt.and_then(get_array_size))
+                            .collect()
+                    } else {
+                        return Err(datafusion::error::DataFusionError::Execution(
+                            "ARRAY_SIZE argument must be a JSON string".to_string(),
+                        ));
+                    };
 
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
@@ -353,7 +383,7 @@ pub fn array_size() -> ScalarUDF {
 /// Syntax: GET_PATH(variant_expr, path)
 /// This implements Snowflake's : operator functionality.
 /// Example: GET_PATH('{"a": {"b": 1}}', 'a.b') returns '1'
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct GetPathFunc {
     signature: Signature,
 }
@@ -389,15 +419,15 @@ impl ScalarUDFImpl for GetPathFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "GET_PATH requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let json_expr = &args[0];
-        let path = &args[1];
+        let json_expr = &args.args[0];
+        let path = &args.args[1];
 
         // Get path string
         let path_str = match path {
@@ -418,31 +448,43 @@ impl ScalarUDFImpl for GetPathFunc {
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)))
             }
             ColumnarValue::Array(arr) => {
-                let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "GET_PATH first argument must be a JSON string".to_string(),
-                    )
-                })?;
-
-                let result: StringArray = str_arr
-                    .iter()
-                    .map(|opt| opt.and_then(|s| get_json_path(s, &path_str)))
-                    .collect();
+                let result: StringArray =
+                    if let Some(str_arr) = arr.as_any().downcast_ref::<StringArray>() {
+                        str_arr
+                            .iter()
+                            .map(|opt| opt.and_then(|s| get_json_path(s, &path_str)))
+                            .collect()
+                    } else if let Some(str_arr) = arr.as_any().downcast_ref::<StringViewArray>() {
+                        str_arr
+                            .iter()
+                            .map(|opt| opt.and_then(|s| get_json_path(s, &path_str)))
+                            .collect()
+                    } else {
+                        return Err(datafusion::error::DataFusionError::Execution(
+                            "GET_PATH first argument must be a JSON string".to_string(),
+                        ));
+                    };
 
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
             _ => {
-                let arr = json_expr.to_array(num_rows)?;
-                let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "GET_PATH first argument must be a JSON string".to_string(),
-                    )
-                })?;
-
-                let result: StringArray = str_arr
-                    .iter()
-                    .map(|opt| opt.and_then(|s| get_json_path(s, &path_str)))
-                    .collect();
+                let arr = json_expr.to_array(args.number_rows)?;
+                let result: StringArray =
+                    if let Some(str_arr) = arr.as_any().downcast_ref::<StringArray>() {
+                        str_arr
+                            .iter()
+                            .map(|opt| opt.and_then(|s| get_json_path(s, &path_str)))
+                            .collect()
+                    } else if let Some(str_arr) = arr.as_any().downcast_ref::<StringViewArray>() {
+                        str_arr
+                            .iter()
+                            .map(|opt| opt.and_then(|s| get_json_path(s, &path_str)))
+                            .collect()
+                    } else {
+                        return Err(datafusion::error::DataFusionError::Execution(
+                            "GET_PATH first argument must be a JSON string".to_string(),
+                        ));
+                    };
 
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
@@ -493,7 +535,7 @@ pub fn get_path() -> ScalarUDF {
 ///
 /// For arrays: GET('[1, 2, 3]', 0) returns '1'
 /// For objects: GET('{"a": 1}', 'a') returns '1'
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct GetFunc {
     signature: Signature,
 }
@@ -529,14 +571,14 @@ impl ScalarUDFImpl for GetFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "GET requires exactly 2 arguments".to_string(),
             ));
         }
 
-        match (&args[0], &args[1]) {
+        match (&args.args[0], &args.args[1]) {
             (ColumnarValue::Scalar(json), ColumnarValue::Scalar(key)) => {
                 let json_str = match json {
                     ScalarValue::Utf8(Some(s)) | ScalarValue::LargeUtf8(Some(s)) => s.clone(),
@@ -615,7 +657,7 @@ pub fn get() -> ScalarUDF {
 ///
 /// Syntax: OBJECT_KEYS(object_expr)
 /// Returns a JSON array of the keys in the object.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ObjectKeysFunc {
     signature: Signature,
 }
@@ -651,14 +693,14 @@ impl ScalarUDFImpl for ObjectKeysFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "OBJECT_KEYS requires exactly 1 argument".to_string(),
             ));
         }
 
-        let json_expr = &args[0];
+        let json_expr = &args.args[0];
 
         match json_expr {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
@@ -683,7 +725,7 @@ impl ScalarUDFImpl for ObjectKeysFunc {
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
             _ => {
-                let arr = json_expr.to_array(num_rows)?;
+                let arr = json_expr.to_array(args.number_rows)?;
                 let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
                     datafusion::error::DataFusionError::Execution(
                         "OBJECT_KEYS argument must be a JSON string".to_string(),
@@ -720,6 +762,7 @@ pub fn object_keys() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::{invoke_udf_int64, invoke_udf_string};
 
     #[test]
     fn test_flatten_array() {
@@ -728,7 +771,7 @@ mod tests {
         let arr = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"[1, 2, 3]"#.to_string())));
         let idx = ColumnarValue::Scalar(ScalarValue::Int64(Some(1)));
 
-        let result = func.invoke_batch(&[arr, idx], 1).unwrap();
+        let result = invoke_udf_string(&func, &[arr, idx]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "2");
@@ -746,7 +789,7 @@ mod tests {
         )));
         let idx = ColumnarValue::Scalar(ScalarValue::Int64(Some(0)));
 
-        let result = func.invoke_batch(&[arr, idx], 1).unwrap();
+        let result = invoke_udf_string(&func, &[arr, idx]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -762,7 +805,7 @@ mod tests {
 
         let arr = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"[1, 2, 3, 4, 5]"#.to_string())));
 
-        let result = func.invoke_batch(&[arr], 1).unwrap();
+        let result = invoke_udf_int64(&func, &[arr]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) = result {
             assert_eq!(v, 5);
@@ -777,7 +820,7 @@ mod tests {
 
         let arr = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"[]"#.to_string())));
 
-        let result = func.invoke_batch(&[arr], 1).unwrap();
+        let result = invoke_udf_int64(&func, &[arr]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) = result {
             assert_eq!(v, 0);
@@ -795,7 +838,7 @@ mod tests {
         )));
         let path = ColumnarValue::Scalar(ScalarValue::Utf8(Some("name".to_string())));
 
-        let result = func.invoke_batch(&[json, path], 1).unwrap();
+        let result = invoke_udf_string(&func, &[json, path]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "Alice");
@@ -813,7 +856,7 @@ mod tests {
         )));
         let path = ColumnarValue::Scalar(ScalarValue::Utf8(Some("user.address.city".to_string())));
 
-        let result = func.invoke_batch(&[json, path], 1).unwrap();
+        let result = invoke_udf_string(&func, &[json, path]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "Tokyo");
@@ -831,7 +874,7 @@ mod tests {
         )));
         let path = ColumnarValue::Scalar(ScalarValue::Utf8(Some("items.1".to_string())));
 
-        let result = func.invoke_batch(&[json, path], 1).unwrap();
+        let result = invoke_udf_string(&func, &[json, path]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "b");
@@ -848,7 +891,7 @@ mod tests {
             r#"{"name": "Alice", "age": 30, "city": "Tokyo"}"#.to_string(),
         )));
 
-        let result = func.invoke_batch(&[json], 1).unwrap();
+        let result = invoke_udf_string(&func, &[json]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let keys: Vec<String> = serde_json::from_str(&s).unwrap();
@@ -868,7 +911,7 @@ mod tests {
         let arr = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"[10, 20, 30]"#.to_string())));
         let idx = ColumnarValue::Scalar(ScalarValue::Int64(Some(1)));
 
-        let result = func.invoke_batch(&[arr, idx], 1).unwrap();
+        let result = invoke_udf_string(&func, &[arr, idx]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "20");
@@ -884,7 +927,7 @@ mod tests {
         let obj = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"{"a": 1, "b": 2}"#.to_string())));
         let key = ColumnarValue::Scalar(ScalarValue::Utf8(Some("b".to_string())));
 
-        let result = func.invoke_batch(&[obj, key], 1).unwrap();
+        let result = invoke_udf_string(&func, &[obj, key]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "2");
@@ -902,7 +945,7 @@ mod tests {
         )));
         let idx = ColumnarValue::Scalar(ScalarValue::Utf8(Some("0".to_string())));
 
-        let result = func.invoke_batch(&[arr, idx], 1).unwrap();
+        let result = invoke_udf_string(&func, &[arr, idx]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "first");

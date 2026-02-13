@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use arrow::array::{Int64Array, RecordBatch};
-use arrow::datatypes::{DataType, Field, Schema};
+use datafusion::arrow::array::{Int64Array, RecordBatch};
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::datasource::MemTable;
 use datafusion::prelude::*;
 use uuid::Uuid;
@@ -849,7 +849,7 @@ impl Executor {
                 "NUMBER".to_string()
             }
             DataType::Float32 | DataType::Float64 => "FLOAT".to_string(),
-            DataType::Utf8 | DataType::LargeUtf8 => "VARCHAR".to_string(),
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "VARCHAR".to_string(),
             DataType::Date32 | DataType::Date64 => "DATE".to_string(),
             DataType::Timestamp(_, _) => "TIMESTAMP".to_string(),
             _ => format!("{data_type:?}"),
@@ -870,7 +870,7 @@ impl Executor {
             DataType::UInt64 => "BIGINT UNSIGNED".to_string(),
             DataType::Float32 => "FLOAT".to_string(),
             DataType::Float64 => "DOUBLE".to_string(),
-            DataType::Utf8 | DataType::LargeUtf8 => "VARCHAR".to_string(),
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "VARCHAR".to_string(),
             DataType::Date32 | DataType::Date64 => "DATE".to_string(),
             DataType::Timestamp(_, _) => "TIMESTAMP".to_string(),
             _ => "VARCHAR".to_string(), // Default fallback
@@ -1541,8 +1541,8 @@ impl Executor {
             let new_batches: Vec<RecordBatch> = batches
                 .into_iter()
                 .map(|batch| {
-                    let null_col = arrow::array::new_null_array(&arrow_type, batch.num_rows());
-                    let mut columns: Vec<Arc<dyn arrow::array::Array>> = batch.columns().to_vec();
+                    let null_col = datafusion::arrow::array::new_null_array(&arrow_type, batch.num_rows());
+                    let mut columns: Vec<Arc<dyn datafusion::arrow::array::Array>> = batch.columns().to_vec();
                     columns.push(null_col);
                     RecordBatch::try_new(new_schema.clone(), columns)
                         .expect("Schema mismatch during column add")
@@ -1614,7 +1614,7 @@ impl Executor {
             let new_batches: Vec<RecordBatch> = batches
                 .into_iter()
                 .map(|batch| {
-                    let columns: Vec<Arc<dyn arrow::array::Array>> = batch
+                    let columns: Vec<Arc<dyn datafusion::arrow::array::Array>> = batch
                         .columns()
                         .iter()
                         .enumerate()
@@ -2684,7 +2684,7 @@ impl Executor {
         &self,
         table_name: &str,
         csv_path: &str,
-        table_schema: &Arc<arrow::datatypes::Schema>,
+        table_schema: &Arc<datafusion::arrow::datatypes::Schema>,
         skip_header: usize,
     ) -> Result<usize> {
         use std::io::BufRead;
@@ -2760,7 +2760,7 @@ impl Executor {
             "VARCHAR" | "STRING" | "TEXT" | "CHAR" => DataType::Utf8,
             "DATE" => DataType::Date32,
             "TIMESTAMP" | "DATETIME" => {
-                DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None)
+                DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None)
             }
             _ => DataType::Utf8, // Default to string for unknown types
         }
@@ -3062,10 +3062,10 @@ impl Executor {
     /// Convert Arrow array value to string
     fn array_value_to_string(
         &self,
-        array: &Arc<dyn arrow::array::Array>,
+        array: &Arc<dyn datafusion::arrow::array::Array>,
         row_idx: usize,
     ) -> Option<String> {
-        use arrow::array::*;
+        use datafusion::arrow::array::*;
 
         if array.is_null(row_idx) {
             return None;
@@ -3124,6 +3124,10 @@ impl Executor {
                 let arr = array.as_any().downcast_ref::<LargeStringArray>().unwrap();
                 arr.value(row_idx).to_string()
             }
+            DataType::Utf8View => {
+                let arr = array.as_any().downcast_ref::<StringViewArray>().unwrap();
+                arr.value(row_idx).to_string()
+            }
             DataType::Date32 => {
                 let arr = array.as_any().downcast_ref::<Date32Array>().unwrap();
                 let days = arr.value(row_idx);
@@ -3143,7 +3147,7 @@ impl Executor {
                 }
             }
             DataType::Timestamp(unit, _) => {
-                use arrow::datatypes::TimeUnit;
+                use datafusion::arrow::datatypes::TimeUnit;
                 let value = match unit {
                     TimeUnit::Second => {
                         let arr = array

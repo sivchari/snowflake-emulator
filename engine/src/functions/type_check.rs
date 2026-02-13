@@ -19,11 +19,14 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, BooleanArray, Float64Array, Int64Array, StringArray};
-use arrow::datatypes::DataType;
+use datafusion::arrow::array::{
+    Array, ArrayRef, BooleanArray, Float64Array, Int64Array, StringArray,
+};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 // ============================================================================
@@ -32,7 +35,7 @@ use datafusion::logical_expr::{
 
 macro_rules! impl_type_check_func {
     ($struct_name:ident, $func_name:literal, $check_fn:expr) => {
-        #[derive(Debug)]
+        #[derive(Debug, PartialEq, Eq, Hash)]
         pub struct $struct_name {
             signature: Signature,
         }
@@ -68,12 +71,8 @@ macro_rules! impl_type_check_func {
                 Ok(DataType::Boolean)
             }
 
-            fn invoke_batch(
-                &self,
-                args: &[ColumnarValue],
-                _num_rows: usize,
-            ) -> Result<ColumnarValue> {
-                if args.is_empty() {
+            fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+                if args.args.is_empty() {
                     return Err(datafusion::error::DataFusionError::Execution(format!(
                         "{} requires exactly 1 argument",
                         $func_name.to_uppercase()
@@ -82,7 +81,7 @@ macro_rules! impl_type_check_func {
 
                 let check_fn: fn(&serde_json::Value) -> bool = $check_fn;
 
-                match &args[0] {
+                match &args.args[0] {
                     ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
                         let result = serde_json::from_str::<serde_json::Value>(s)
                             .map(|v| check_fn(&v))
@@ -169,7 +168,7 @@ pub fn is_decimal() -> ScalarUDF {
 // TYPEOF(variant)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct TypeofFunc {
     signature: Signature,
 }
@@ -222,14 +221,14 @@ impl ScalarUDFImpl for TypeofFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.is_empty() {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TYPEOF requires exactly 1 argument".to_string(),
             ));
         }
 
-        match &args[0] {
+        match &args.args[0] {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
                 let type_name = match serde_json::from_str::<serde_json::Value>(s) {
                     Ok(v) => get_type_name(&v),
@@ -278,7 +277,7 @@ pub fn typeof_func() -> ScalarUDF {
 // TO_VARIANT(value)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ToVariantFunc {
     signature: Signature,
 }
@@ -314,14 +313,14 @@ impl ScalarUDFImpl for ToVariantFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.is_empty() {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TO_VARIANT requires exactly 1 argument".to_string(),
             ));
         }
 
-        match &args[0] {
+        match &args.args[0] {
             ColumnarValue::Scalar(scalar) => {
                 let json_str = scalar_to_variant(scalar)?;
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(json_str)))
@@ -436,7 +435,7 @@ pub fn to_variant() -> ScalarUDF {
 // TO_ARRAY(variant)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ToArrayFunc {
     signature: Signature,
 }
@@ -472,14 +471,14 @@ impl ScalarUDFImpl for ToArrayFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.is_empty() {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TO_ARRAY requires exactly 1 argument".to_string(),
             ));
         }
 
-        match &args[0] {
+        match &args.args[0] {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
                 let result = value_to_array(s);
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(result))))
@@ -499,7 +498,7 @@ impl ScalarUDFImpl for ToArrayFunc {
             }
             _ => {
                 // Non-string scalars: wrap in array
-                let scalar = &args[0];
+                let scalar = &args.args[0];
                 if let ColumnarValue::Scalar(s) = scalar {
                     let json_str = scalar_to_variant(s)?;
                     let result = json_str.map(|s| format!("[{s}]"));
@@ -543,7 +542,7 @@ pub fn to_array() -> ScalarUDF {
 // TO_OBJECT(variant)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ToObjectFunc {
     signature: Signature,
 }
@@ -579,14 +578,14 @@ impl ScalarUDFImpl for ToObjectFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.is_empty() {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TO_OBJECT requires exactly 1 argument".to_string(),
             ));
         }
 
-        match &args[0] {
+        match &args.args[0] {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
                 let result = value_to_object(s);
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(result)))
@@ -635,12 +634,13 @@ pub fn to_object() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::{invoke_udf_bool, invoke_udf_string};
 
     #[test]
     fn test_is_array_true() {
         let func = IsArrayFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("[1, 2, 3]".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_bool(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) = result {
             assert!(b);
@@ -653,7 +653,7 @@ mod tests {
     fn test_is_array_false() {
         let func = IsArrayFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("{\"a\": 1}".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_bool(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) = result {
             assert!(!b);
@@ -666,7 +666,7 @@ mod tests {
     fn test_is_object_true() {
         let func = IsObjectFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("{\"a\": 1}".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_bool(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) = result {
             assert!(b);
@@ -679,7 +679,7 @@ mod tests {
     fn test_typeof_array() {
         let func = TypeofFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("[1, 2, 3]".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "ARRAY");
@@ -692,7 +692,7 @@ mod tests {
     fn test_typeof_object() {
         let func = TypeofFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("{\"a\": 1}".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "OBJECT");
@@ -705,7 +705,7 @@ mod tests {
     fn test_typeof_integer() {
         let func = TypeofFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("42".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "INTEGER");
@@ -718,7 +718,7 @@ mod tests {
     fn test_to_variant_int() {
         let func = ToVariantFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Int64(Some(42)));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "42");
@@ -731,7 +731,7 @@ mod tests {
     fn test_to_array_non_array() {
         let func = ToArrayFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("42".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "[42]");
@@ -744,7 +744,7 @@ mod tests {
     fn test_to_array_already_array() {
         let func = ToArrayFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("[1, 2, 3]".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -759,7 +759,7 @@ mod tests {
     fn test_to_object_valid() {
         let func = ToObjectFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("{\"a\": 1}".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -773,7 +773,7 @@ mod tests {
     fn test_to_object_invalid() {
         let func = ToObjectFunc::new();
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("[1, 2, 3]".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(opt)) = result {
             assert!(opt.is_none()); // Arrays cannot be converted to objects

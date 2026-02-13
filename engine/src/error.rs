@@ -26,7 +26,7 @@ pub enum Error {
     DataFusion(#[from] datafusion::error::DataFusionError),
 
     #[error("Arrow error: {0}")]
-    Arrow(#[from] arrow::error::ArrowError),
+    Arrow(#[from] datafusion::arrow::error::ArrowError),
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
