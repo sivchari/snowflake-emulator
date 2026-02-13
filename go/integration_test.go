@@ -1518,7 +1518,6 @@ func TestWindowLagLead(t *testing.T) {
 // Date/Time Functions Tests (Extended)
 
 func TestToDate(t *testing.T) {
-	t.Skip("TO_DATE function not yet implemented")
 	db := getDB(t)
 	defer db.Close()
 
@@ -1737,7 +1736,6 @@ func TestSHA2(t *testing.T) {
 // Context Functions Tests
 
 func TestCurrentUser(t *testing.T) {
-	t.Skip("CURRENT_USER function not yet implemented")
 	db := getDB(t)
 	defer db.Close()
 
@@ -1768,7 +1766,6 @@ func TestCurrentRole(t *testing.T) {
 }
 
 func TestCurrentDatabase(t *testing.T) {
-	t.Skip("CURRENT_DATABASE function not yet implemented")
 	db := getDB(t)
 	defer db.Close()
 
@@ -1943,7 +1940,6 @@ func TestTranslate(t *testing.T) {
 // Phase 5 Window Functions
 
 func TestWindowFirstLastValue(t *testing.T) {
-	t.Skip("FIRST_VALUE/LAST_VALUE with IGNORE NULLS not yet implemented")
 	db := getDB(t)
 	defer db.Close()
 
@@ -1960,7 +1956,13 @@ func TestWindowFirstLastValue(t *testing.T) {
 
 	var id int
 	var firstVal int
-	err = db.QueryRow("SELECT id, FIRST_VALUE(value) OVER (PARTITION BY category ORDER BY id) as fv FROM test_firstlast WHERE id = 2").Scan(&id, &firstVal)
+	// Use subquery to ensure window function operates on full partition before filtering
+	err = db.QueryRow(`
+		SELECT id, fv FROM (
+			SELECT id, FIRST_VALUE(value) OVER (PARTITION BY category ORDER BY id) as fv
+			FROM test_firstlast
+		) WHERE id = 2
+	`).Scan(&id, &firstVal)
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}

@@ -215,7 +215,7 @@ impl Executor {
             catalog,
             sequences: Arc::new(RwLock::new(HashMap::new())),
             views: Arc::new(RwLock::new(HashMap::new())),
-            current_database: Arc::new(RwLock::new("TESTDB".to_string())),
+            current_database: Arc::new(RwLock::new("EMULATOR_DB".to_string())),
             current_schema: Arc::new(RwLock::new("PUBLIC".to_string())),
             in_transaction: Arc::new(RwLock::new(false)),
             transaction_snapshot: Arc::new(RwLock::new(HashMap::new())),
@@ -349,14 +349,21 @@ impl Executor {
             return self.handle_drop_schema(sql, statement_handle);
         }
 
-        // Handle CURRENT_DATABASE() and CURRENT_SCHEMA() context functions
-        // These need special handling to return the session state
-        if sql_upper.contains("CURRENT_DATABASE()") || sql_upper.contains("CURRENT_SCHEMA()") {
+        // Handle context functions (CURRENT_USER, CURRENT_DATABASE, CURRENT_SCHEMA, CURRENT_ROLE, CURRENT_WAREHOUSE)
+        // These need special handling to return consistent emulator values
+        if sql_upper.contains("CURRENT_USER()")
+            || sql_upper.contains("CURRENT_DATABASE()")
+            || sql_upper.contains("CURRENT_SCHEMA()")
+            || sql_upper.contains("CURRENT_ROLE()")
+            || sql_upper.contains("CURRENT_WAREHOUSE()")
+        {
             return self.handle_context_function(sql, statement_handle);
         }
 
         // Rewrite Snowflake-specific SQL constructs
         let rewritten_sql = sql_rewriter::rewrite(sql);
+        tracing::debug!("Original SQL: {}", sql);
+        tracing::debug!("Rewritten SQL: {}", rewritten_sql);
 
         // Expand view references in the SQL
         let rewritten_sql = self.expand_views(&rewritten_sql);
@@ -1915,9 +1922,10 @@ impl Executor {
         self.current_schema.read().unwrap().clone()
     }
 
-    /// Handle context function queries (CURRENT_DATABASE, CURRENT_SCHEMA)
+    /// Handle context function queries (CURRENT_USER, CURRENT_DATABASE, CURRENT_SCHEMA, etc.)
     ///
-    /// These functions need to return the session state values, not hardcoded defaults.
+    /// USER, ROLE, WAREHOUSE return fixed emulator values.
+    /// DATABASE, SCHEMA return session state values (changeable via USE commands).
     fn handle_context_function(
         &self,
         sql: &str,
@@ -1925,7 +1933,35 @@ impl Executor {
     ) -> Result<StatementResponse> {
         let sql_upper = sql.trim().to_uppercase();
 
-        // Handle SELECT CURRENT_DATABASE()
+        // Handle SELECT CURRENT_USER()
+        if sql_upper.contains("CURRENT_USER()") {
+            let columns = vec![ColumnMetaData {
+                name: "CURRENT_USER()".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            }];
+            let data = vec![vec![Some("EMULATOR_USER".to_string())]];
+            return Ok(StatementResponse::success(data, columns, statement_handle));
+        }
+
+        // Handle SELECT CURRENT_ROLE()
+        if sql_upper.contains("CURRENT_ROLE()") {
+            let columns = vec![ColumnMetaData {
+                name: "CURRENT_ROLE()".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            }];
+            let data = vec![vec![Some("ACCOUNTADMIN".to_string())]];
+            return Ok(StatementResponse::success(data, columns, statement_handle));
+        }
+
+        // Handle SELECT CURRENT_DATABASE() - returns session state
         if sql_upper.contains("CURRENT_DATABASE()") {
             let db_name = self.get_current_database();
             let columns = vec![ColumnMetaData {
@@ -1940,7 +1976,7 @@ impl Executor {
             return Ok(StatementResponse::success(data, columns, statement_handle));
         }
 
-        // Handle SELECT CURRENT_SCHEMA()
+        // Handle SELECT CURRENT_SCHEMA() - returns session state
         if sql_upper.contains("CURRENT_SCHEMA()") {
             let schema_name = self.get_current_schema();
             let columns = vec![ColumnMetaData {
@@ -1952,6 +1988,20 @@ impl Executor {
                 length: None,
             }];
             let data = vec![vec![Some(schema_name)]];
+            return Ok(StatementResponse::success(data, columns, statement_handle));
+        }
+
+        // Handle SELECT CURRENT_WAREHOUSE()
+        if sql_upper.contains("CURRENT_WAREHOUSE()") {
+            let columns = vec![ColumnMetaData {
+                name: "CURRENT_WAREHOUSE()".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: true,
+                precision: None,
+                scale: None,
+                length: None,
+            }];
+            let data = vec![vec![Some("EMULATOR_WH".to_string())]];
             return Ok(StatementResponse::success(data, columns, statement_handle));
         }
 
@@ -5197,7 +5247,7 @@ mod tests {
         let executor = Executor::new();
 
         // Verify initial database
-        assert_eq!(executor.get_current_database(), "TESTDB");
+        assert_eq!(executor.get_current_database(), "EMULATOR_DB");
 
         // Change database
         let response = executor.execute("USE DATABASE mydb").await.unwrap();

@@ -621,10 +621,12 @@ impl ScalarUDFImpl for ToDateFunc {
 fn to_date_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
     match scalar {
         ScalarValue::Utf8(Some(s)) => {
-            // Try multiple date formats
+            // Try multiple date formats (including US format MM/DD/YYYY)
             let formats = [
                 "%Y-%m-%d",
                 "%Y/%m/%d",
+                "%m/%d/%Y", // US format: MM/DD/YYYY
+                "%m-%d-%Y", // US format: MM-DD-YYYY
                 "%d-%m-%Y",
                 "%d/%m/%Y",
                 "%Y-%m-%d %H:%M:%S",
@@ -669,6 +671,8 @@ fn to_date_array(array: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
                         let formats = [
                             "%Y-%m-%d",
                             "%Y/%m/%d",
+                            "%m/%d/%Y", // US format: MM/DD/YYYY
+                            "%m-%d-%Y", // US format: MM-DD-YYYY
                             "%d-%m-%Y",
                             "%d/%m/%Y",
                             "%Y-%m-%d %H:%M:%S",

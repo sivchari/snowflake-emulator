@@ -117,6 +117,24 @@ fn rewrite_function_names(sql: &str) -> String {
         .replace_all(&result, "get($1, $2)")
         .to_string();
 
+    // CURRENT_USER() -> current_user (DataFusion treats this as a keyword without parentheses)
+    let current_user_pattern = Regex::new(r"(?i)\bCURRENT_USER\s*\(\s*\)").unwrap();
+    result = current_user_pattern
+        .replace_all(&result, "current_user")
+        .to_string();
+
+    // CURRENT_DATABASE() -> current_database (DataFusion treats this as a keyword without parentheses)
+    let current_database_pattern = Regex::new(r"(?i)\bCURRENT_DATABASE\s*\(\s*\)").unwrap();
+    result = current_database_pattern
+        .replace_all(&result, "current_database")
+        .to_string();
+
+    // CURRENT_SCHEMA() -> current_schema (DataFusion treats this as a keyword without parentheses)
+    let current_schema_pattern = Regex::new(r"(?i)\bCURRENT_SCHEMA\s*\(\s*\)").unwrap();
+    result = current_schema_pattern
+        .replace_all(&result, "current_schema")
+        .to_string();
+
     result
 }
 
@@ -1074,5 +1092,29 @@ mod tests {
         let sql = "SELECT id, RATIO_TO_REPORT(value) OVER () as ratio FROM data";
         let rewritten = rewrite(sql);
         assert!(rewritten.contains("((value) * 1.0 / SUM(value) OVER ())"));
+    }
+
+    #[test]
+    fn test_current_user_rewrite() {
+        let sql = "SELECT CURRENT_USER()";
+        let rewritten = rewrite(sql);
+        // DataFusion treats current_user as a keyword without parentheses
+        assert_eq!(rewritten, "SELECT current_user");
+    }
+
+    #[test]
+    fn test_current_database_rewrite() {
+        let sql = "SELECT CURRENT_DATABASE()";
+        let rewritten = rewrite(sql);
+        // DataFusion treats current_database as a keyword without parentheses
+        assert_eq!(rewritten, "SELECT current_database");
+    }
+
+    #[test]
+    fn test_current_schema_rewrite() {
+        let sql = "SELECT CURRENT_SCHEMA()";
+        let rewritten = rewrite(sql);
+        // DataFusion treats current_schema as a keyword without parentheses
+        assert_eq!(rewritten, "SELECT current_schema");
     }
 }
