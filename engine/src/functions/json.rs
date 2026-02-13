@@ -5,11 +5,12 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, StringArray};
-use arrow::datatypes::DataType;
+use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 // ============================================================================
@@ -21,7 +22,7 @@ use datafusion::logical_expr::{
 /// Syntax: PARSE_JSON(string_expression)
 /// Returns the input string as a JSON value (VARIANT in Snowflake).
 /// In this implementation, we validate JSON and return it as a string.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ParseJsonFunc {
     signature: Signature,
 }
@@ -58,14 +59,14 @@ impl ScalarUDFImpl for ParseJsonFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "PARSE_JSON requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
@@ -109,7 +110,7 @@ impl ScalarUDFImpl for ParseJsonFunc {
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
             _ => {
-                let arr = input.to_array(num_rows)?;
+                let arr = input.to_array(args.number_rows)?;
                 let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
                     datafusion::error::DataFusionError::Execution(
                         "PARSE_JSON argument must be a string".to_string(),
@@ -150,7 +151,7 @@ pub fn parse_json() -> ScalarUDF {
 ///
 /// Syntax: TO_JSON(variant_expression)
 /// Returns the JSON representation of the input value.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ToJsonFunc {
     signature: Signature,
 }
@@ -186,14 +187,14 @@ impl ScalarUDFImpl for ToJsonFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TO_JSON requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(scalar) => {
@@ -257,7 +258,7 @@ fn scalar_to_json(scalar: &ScalarValue) -> Result<Option<String>> {
 
 /// Convert Arrow array to JSON strings
 fn array_to_json_strings(array: &ArrayRef) -> Result<StringArray> {
-    use arrow::array::*;
+    use datafusion::arrow::array::*;
 
     let result: StringArray = match array.data_type() {
         DataType::Boolean => {
@@ -352,6 +353,7 @@ pub fn to_json() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::invoke_udf_string;
 
     #[test]
     fn test_parse_json_object() {
@@ -361,7 +363,7 @@ mod tests {
             r#"{"name": "Alice", "age": 30}"#.to_string(),
         )));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             // Parse the result to verify it's valid JSON
@@ -379,7 +381,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"[1, 2, 3]"#.to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -396,7 +398,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("not valid json".to_string())));
 
-        let result = func.invoke_batch(&[input], 1);
+        let result = invoke_udf_string(&func, &[input]);
         assert!(result.is_err());
     }
 
@@ -406,7 +408,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Int64(Some(42)));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "42");
@@ -421,7 +423,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("hello".to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "\"hello\"");
@@ -438,7 +440,7 @@ mod tests {
         let input =
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"{"key": "value"}"#.to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();

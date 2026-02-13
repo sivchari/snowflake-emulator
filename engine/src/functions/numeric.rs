@@ -5,11 +5,12 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, Float64Array};
-use arrow::datatypes::DataType;
+use datafusion::arrow::array::{Array, Float64Array};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 // ============================================================================
@@ -20,7 +21,7 @@ use datafusion::logical_expr::{
 ///
 /// Syntax: DIV0(dividend, divisor)
 /// Returns dividend / divisor, or 0 if divisor is 0.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Div0Func {
     signature: Signature,
 }
@@ -56,15 +57,15 @@ impl ScalarUDFImpl for Div0Func {
         Ok(DataType::Float64)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "DIV0 requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let dividend = &args[0];
-        let divisor = &args[1];
+        let dividend = &args.args[0];
+        let divisor = &args.args[1];
 
         match (dividend, divisor) {
             (ColumnarValue::Scalar(div_nd), ColumnarValue::Scalar(div_sr)) => {
@@ -72,8 +73,8 @@ impl ScalarUDFImpl for Div0Func {
                 Ok(ColumnarValue::Scalar(result))
             }
             _ => {
-                let dividend_arr = dividend.to_array(num_rows)?;
-                let divisor_arr = divisor.to_array(num_rows)?;
+                let dividend_arr = dividend.to_array(args.number_rows)?;
+                let divisor_arr = divisor.to_array(args.number_rows)?;
                 let result = div0_arrays(&dividend_arr, &divisor_arr)?;
                 Ok(ColumnarValue::Array(result))
             }
@@ -131,21 +132,21 @@ fn array_to_f64(array: &Arc<dyn Array>, idx: usize) -> Option<f64> {
         DataType::Float32 => {
             let arr = array
                 .as_any()
-                .downcast_ref::<arrow::array::Float32Array>()
+                .downcast_ref::<datafusion::arrow::array::Float32Array>()
                 .unwrap();
             Some(arr.value(idx) as f64)
         }
         DataType::Int64 => {
             let arr = array
                 .as_any()
-                .downcast_ref::<arrow::array::Int64Array>()
+                .downcast_ref::<datafusion::arrow::array::Int64Array>()
                 .unwrap();
             Some(arr.value(idx) as f64)
         }
         DataType::Int32 => {
             let arr = array
                 .as_any()
-                .downcast_ref::<arrow::array::Int32Array>()
+                .downcast_ref::<datafusion::arrow::array::Int32Array>()
                 .unwrap();
             Some(arr.value(idx) as f64)
         }
@@ -194,7 +195,7 @@ pub fn div0() -> ScalarUDF {
 ///
 /// Syntax: DIV0NULL(dividend, divisor)
 /// Returns dividend / divisor, or NULL if divisor is 0.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Div0NullFunc {
     signature: Signature,
 }
@@ -230,15 +231,15 @@ impl ScalarUDFImpl for Div0NullFunc {
         Ok(DataType::Float64)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "DIV0NULL requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let dividend = &args[0];
-        let divisor = &args[1];
+        let dividend = &args.args[0];
+        let divisor = &args.args[1];
 
         match (dividend, divisor) {
             (ColumnarValue::Scalar(div_nd), ColumnarValue::Scalar(div_sr)) => {
@@ -246,8 +247,8 @@ impl ScalarUDFImpl for Div0NullFunc {
                 Ok(ColumnarValue::Scalar(result))
             }
             _ => {
-                let dividend_arr = dividend.to_array(num_rows)?;
-                let divisor_arr = divisor.to_array(num_rows)?;
+                let dividend_arr = dividend.to_array(args.number_rows)?;
+                let divisor_arr = divisor.to_array(args.number_rows)?;
                 let result = div0null_arrays(&dividend_arr, &divisor_arr)?;
                 Ok(ColumnarValue::Array(result))
             }
@@ -311,6 +312,7 @@ pub fn div0null() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::invoke_udf_float64;
 
     #[test]
     fn test_div0_normal() {
@@ -319,7 +321,7 @@ mod tests {
         let dividend = ColumnarValue::Scalar(ScalarValue::Int64(Some(10)));
         let divisor = ColumnarValue::Scalar(ScalarValue::Int64(Some(2)));
 
-        let result = func.invoke_batch(&[dividend, divisor], 1).unwrap();
+        let result = invoke_udf_float64(&func, &[dividend, divisor]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) = result {
             assert_eq!(v, 5.0);
@@ -335,7 +337,7 @@ mod tests {
         let dividend = ColumnarValue::Scalar(ScalarValue::Int64(Some(10)));
         let divisor = ColumnarValue::Scalar(ScalarValue::Int64(Some(0)));
 
-        let result = func.invoke_batch(&[dividend, divisor], 1).unwrap();
+        let result = invoke_udf_float64(&func, &[dividend, divisor]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) = result {
             assert_eq!(v, 0.0);
@@ -351,7 +353,7 @@ mod tests {
         let dividend = ColumnarValue::Scalar(ScalarValue::Int64(Some(10)));
         let divisor = ColumnarValue::Scalar(ScalarValue::Int64(Some(2)));
 
-        let result = func.invoke_batch(&[dividend, divisor], 1).unwrap();
+        let result = invoke_udf_float64(&func, &[dividend, divisor]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) = result {
             assert_eq!(v, 5.0);
@@ -367,7 +369,7 @@ mod tests {
         let dividend = ColumnarValue::Scalar(ScalarValue::Int64(Some(10)));
         let divisor = ColumnarValue::Scalar(ScalarValue::Int64(Some(0)));
 
-        let result = func.invoke_batch(&[dividend, divisor], 1).unwrap();
+        let result = invoke_udf_float64(&func, &[dividend, divisor]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Float64(None)) = result {
             // Expected NULL

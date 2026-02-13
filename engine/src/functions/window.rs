@@ -11,8 +11,8 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, BooleanArray, Int64Builder};
-use arrow::datatypes::{DataType, Field};
+use datafusion::arrow::array::{Array, ArrayRef, BooleanArray, Int64Builder};
+use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::Result;
 use datafusion::logical_expr::function::{PartitionEvaluatorArgs, WindowUDFFieldArgs};
 use datafusion::logical_expr::{
@@ -27,7 +27,7 @@ use datafusion::logical_expr::{
 ///
 /// Returns a counter that increments each time the condition evaluates to TRUE.
 /// The counter starts at 0 and is independent for each partition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConditionalTrueEvent {
     signature: Signature,
 }
@@ -66,13 +66,17 @@ impl WindowUDFImpl for ConditionalTrueEvent {
         Ok(Box::new(ConditionalTrueEventEvaluator::new()))
     }
 
-    fn field(&self, field_args: WindowUDFFieldArgs) -> Result<Field> {
-        Ok(Field::new(field_args.name(), DataType::Int64, true))
+    fn field(&self, field_args: WindowUDFFieldArgs) -> Result<FieldRef> {
+        Ok(Arc::new(Field::new(
+            field_args.name(),
+            DataType::Int64,
+            true,
+        )))
     }
 }
 
 /// Partition evaluator for CONDITIONAL_TRUE_EVENT
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct ConditionalTrueEventEvaluator {
     // No state needed - we process the entire partition at once
 }
@@ -126,7 +130,7 @@ impl PartitionEvaluator for ConditionalTrueEventEvaluator {
 ///
 /// Returns a counter that increments each time the value changes from the previous row.
 /// The counter starts at 0 and is independent for each partition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConditionalChangeEvent {
     signature: Signature,
 }
@@ -166,13 +170,17 @@ impl WindowUDFImpl for ConditionalChangeEvent {
         Ok(Box::new(ConditionalChangeEventEvaluator::new()))
     }
 
-    fn field(&self, field_args: WindowUDFFieldArgs) -> Result<Field> {
-        Ok(Field::new(field_args.name(), DataType::Int64, true))
+    fn field(&self, field_args: WindowUDFFieldArgs) -> Result<FieldRef> {
+        Ok(Arc::new(Field::new(
+            field_args.name(),
+            DataType::Int64,
+            true,
+        )))
     }
 }
 
 /// Partition evaluator for CONDITIONAL_CHANGE_EVENT
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct ConditionalChangeEventEvaluator {
     // No state needed - we process the entire partition at once
 }
@@ -231,7 +239,7 @@ impl PartitionEvaluator for ConditionalChangeEventEvaluator {
 
 /// Compare two values in an array for equality
 fn array_values_equal(array: &ArrayRef, idx1: usize, idx2: usize) -> bool {
-    use arrow::array::*;
+    use datafusion::arrow::array::*;
 
     macro_rules! compare_primitive {
         ($array_type:ty) => {
@@ -259,6 +267,9 @@ fn array_values_equal(array: &ArrayRef, idx1: usize, idx2: usize) -> bool {
         return arr.value(idx1) == arr.value(idx2);
     }
     if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
+        return arr.value(idx1) == arr.value(idx2);
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<StringViewArray>() {
         return arr.value(idx1) == arr.value(idx2);
     }
 
@@ -291,7 +302,7 @@ pub fn conditional_change_event() -> WindowUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int64Array;
+    use datafusion::arrow::array::Int64Array;
 
     #[test]
     fn test_conditional_true_event_basic() {
@@ -375,7 +386,7 @@ mod tests {
         let mut evaluator = ConditionalChangeEventEvaluator::new();
 
         // Create string array: ["a", "a", "b", "b", "c"]
-        let str_array: ArrayRef = Arc::new(arrow::array::StringArray::from(vec![
+        let str_array: ArrayRef = Arc::new(datafusion::arrow::array::StringArray::from(vec![
             "a", "a", "b", "b", "c",
         ]));
 

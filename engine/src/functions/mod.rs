@@ -94,6 +94,8 @@ mod json;
 mod numeric;
 mod object;
 mod string;
+#[cfg(test)]
+mod test_utils;
 mod try_functions;
 mod type_check;
 mod window;

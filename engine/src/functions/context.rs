@@ -5,10 +5,11 @@
 
 use std::any::Any;
 
-use arrow::datatypes::DataType;
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 // ============================================================================
@@ -19,7 +20,7 @@ use datafusion::logical_expr::{
 ///
 /// Syntax: CURRENT_USER()
 /// Returns the name of the user executing the current query.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct CurrentUserFunc {
     signature: Signature,
 }
@@ -55,7 +56,7 @@ impl ScalarUDFImpl for CurrentUserFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, _args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+    fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
             "EMULATOR_USER".to_string(),
         ))))
@@ -79,7 +80,7 @@ pub fn current_user() -> ScalarUDF {
 ///
 /// Syntax: CURRENT_ROLE()
 /// Returns the name of the role in use for the current session.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct CurrentRoleFunc {
     signature: Signature,
 }
@@ -115,7 +116,7 @@ impl ScalarUDFImpl for CurrentRoleFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, _args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+    fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
             "ACCOUNTADMIN".to_string(),
         ))))
@@ -139,7 +140,7 @@ pub fn current_role() -> ScalarUDF {
 ///
 /// Syntax: CURRENT_DATABASE()
 /// Returns the name of the database in use for the current session.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct CurrentDatabaseFunc {
     signature: Signature,
 }
@@ -175,7 +176,7 @@ impl ScalarUDFImpl for CurrentDatabaseFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, _args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+    fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
             "EMULATOR_DB".to_string(),
         ))))
@@ -199,7 +200,7 @@ pub fn current_database() -> ScalarUDF {
 ///
 /// Syntax: CURRENT_SCHEMA()
 /// Returns the name of the schema in use for the current session.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct CurrentSchemaFunc {
     signature: Signature,
 }
@@ -235,7 +236,7 @@ impl ScalarUDFImpl for CurrentSchemaFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, _args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+    fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
             "PUBLIC".to_string(),
         ))))
@@ -259,7 +260,7 @@ pub fn current_schema() -> ScalarUDF {
 ///
 /// Syntax: CURRENT_WAREHOUSE()
 /// Returns the name of the warehouse in use for the current session.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct CurrentWarehouseFunc {
     signature: Signature,
 }
@@ -295,7 +296,7 @@ impl ScalarUDFImpl for CurrentWarehouseFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, _args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
+    fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
             "EMULATOR_WH".to_string(),
         ))))
@@ -314,11 +315,12 @@ pub fn current_warehouse() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::invoke_udf_string;
 
     #[test]
     fn test_current_user() {
         let func = CurrentUserFunc::new();
-        let result = func.invoke_batch(&[], 1).unwrap();
+        let result = invoke_udf_string(&func, &[]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(user))) = result {
             assert_eq!(user, "EMULATOR_USER");
@@ -330,7 +332,7 @@ mod tests {
     #[test]
     fn test_current_role() {
         let func = CurrentRoleFunc::new();
-        let result = func.invoke_batch(&[], 1).unwrap();
+        let result = invoke_udf_string(&func, &[]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(role))) = result {
             assert_eq!(role, "ACCOUNTADMIN");
@@ -342,7 +344,7 @@ mod tests {
     #[test]
     fn test_current_database() {
         let func = CurrentDatabaseFunc::new();
-        let result = func.invoke_batch(&[], 1).unwrap();
+        let result = invoke_udf_string(&func, &[]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(db))) = result {
             assert_eq!(db, "EMULATOR_DB");
@@ -354,7 +356,7 @@ mod tests {
     #[test]
     fn test_current_schema() {
         let func = CurrentSchemaFunc::new();
-        let result = func.invoke_batch(&[], 1).unwrap();
+        let result = invoke_udf_string(&func, &[]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(schema))) = result {
             assert_eq!(schema, "PUBLIC");
@@ -366,7 +368,7 @@ mod tests {
     #[test]
     fn test_current_warehouse() {
         let func = CurrentWarehouseFunc::new();
-        let result = func.invoke_batch(&[], 1).unwrap();
+        let result = invoke_udf_string(&func, &[]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(wh))) = result {
             assert_eq!(wh, "EMULATOR_WH");

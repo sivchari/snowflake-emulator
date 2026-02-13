@@ -6,9 +6,10 @@
 //! - `LISTAGG(value, delimiter)` - Concatenate values with a delimiter
 
 use std::any::Any;
+use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, StringArray};
-use arrow::datatypes::{DataType, Field};
+use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
     function::AccumulatorArgs, function::StateFieldsArgs, Accumulator, AggregateUDF,
@@ -19,7 +20,7 @@ use datafusion::logical_expr::{
 // ARRAY_AGG(value)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayAggFunc {
     signature: Signature,
 }
@@ -56,13 +57,13 @@ impl AggregateUDFImpl for ArrayAggFunc {
         Ok(DataType::Utf8)
     }
 
-    fn state_fields(&self, args: StateFieldsArgs<'_>) -> Result<Vec<Field>> {
+    fn state_fields(&self, args: StateFieldsArgs<'_>) -> Result<Vec<FieldRef>> {
         // State is stored as a JSON string
-        Ok(vec![Field::new(
+        Ok(vec![Arc::new(Field::new(
             format!("{}_state", args.name),
             DataType::Utf8,
             true,
-        )])
+        ))])
     }
 
     fn accumulator(&self, _acc_args: AccumulatorArgs<'_>) -> Result<Box<dyn Accumulator>> {
@@ -70,7 +71,7 @@ impl AggregateUDFImpl for ArrayAggFunc {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct ArrayAggAccumulator {
     values: Vec<serde_json::Value>,
 }
@@ -144,7 +145,7 @@ pub fn array_agg() -> AggregateUDF {
 // OBJECT_AGG(key, value)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ObjectAggFunc {
     signature: Signature,
 }
@@ -180,12 +181,12 @@ impl AggregateUDFImpl for ObjectAggFunc {
         Ok(DataType::Utf8)
     }
 
-    fn state_fields(&self, args: StateFieldsArgs<'_>) -> Result<Vec<Field>> {
-        Ok(vec![Field::new(
+    fn state_fields(&self, args: StateFieldsArgs<'_>) -> Result<Vec<FieldRef>> {
+        Ok(vec![Arc::new(Field::new(
             format!("{}_state", args.name),
             DataType::Utf8,
             true,
-        )])
+        ))])
     }
 
     fn accumulator(&self, _acc_args: AccumulatorArgs<'_>) -> Result<Box<dyn Accumulator>> {
@@ -193,7 +194,7 @@ impl AggregateUDFImpl for ObjectAggFunc {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct ObjectAggAccumulator {
     object: serde_json::Map<String, serde_json::Value>,
 }
@@ -280,7 +281,7 @@ pub fn object_agg() -> AggregateUDF {
 // LISTAGG(value, delimiter)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ListaggFunc {
     signature: Signature,
 }
@@ -316,11 +317,19 @@ impl AggregateUDFImpl for ListaggFunc {
         Ok(DataType::Utf8)
     }
 
-    fn state_fields(&self, args: StateFieldsArgs<'_>) -> Result<Vec<Field>> {
+    fn state_fields(&self, args: StateFieldsArgs<'_>) -> Result<Vec<FieldRef>> {
         // Two state fields: accumulated string and delimiter
         Ok(vec![
-            Field::new(format!("{}_values", args.name), DataType::Utf8, true),
-            Field::new(format!("{}_delimiter", args.name), DataType::Utf8, true),
+            Arc::new(Field::new(
+                format!("{}_values", args.name),
+                DataType::Utf8,
+                true,
+            )),
+            Arc::new(Field::new(
+                format!("{}_delimiter", args.name),
+                DataType::Utf8,
+                true,
+            )),
         ])
     }
 
@@ -337,7 +346,7 @@ impl AggregateUDFImpl for ListaggFunc {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct ListaggAccumulator {
     values: Vec<String>,
     delimiter: String,
@@ -439,7 +448,7 @@ pub fn listagg() -> AggregateUDF {
 // ============================================================================
 
 fn array_value_to_json(array: &ArrayRef, index: usize) -> serde_json::Value {
-    use arrow::array::*;
+    use datafusion::arrow::array::*;
 
     match array.data_type() {
         DataType::Boolean => {
@@ -447,45 +456,45 @@ fn array_value_to_json(array: &ArrayRef, index: usize) -> serde_json::Value {
             serde_json::Value::Bool(arr.value(index))
         }
         DataType::Int8 => {
-            let arr = array.as_primitive::<arrow::datatypes::Int8Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Int8Type>();
             serde_json::Value::Number(arr.value(index).into())
         }
         DataType::Int16 => {
-            let arr = array.as_primitive::<arrow::datatypes::Int16Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Int16Type>();
             serde_json::Value::Number(arr.value(index).into())
         }
         DataType::Int32 => {
-            let arr = array.as_primitive::<arrow::datatypes::Int32Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Int32Type>();
             serde_json::Value::Number(arr.value(index).into())
         }
         DataType::Int64 => {
-            let arr = array.as_primitive::<arrow::datatypes::Int64Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Int64Type>();
             serde_json::Value::Number(arr.value(index).into())
         }
         DataType::UInt8 => {
-            let arr = array.as_primitive::<arrow::datatypes::UInt8Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::UInt8Type>();
             serde_json::Value::Number(arr.value(index).into())
         }
         DataType::UInt16 => {
-            let arr = array.as_primitive::<arrow::datatypes::UInt16Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::UInt16Type>();
             serde_json::Value::Number(arr.value(index).into())
         }
         DataType::UInt32 => {
-            let arr = array.as_primitive::<arrow::datatypes::UInt32Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::UInt32Type>();
             serde_json::Value::Number(arr.value(index).into())
         }
         DataType::UInt64 => {
-            let arr = array.as_primitive::<arrow::datatypes::UInt64Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::UInt64Type>();
             serde_json::Value::Number(arr.value(index).into())
         }
         DataType::Float32 => {
-            let arr = array.as_primitive::<arrow::datatypes::Float32Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Float32Type>();
             serde_json::Number::from_f64(arr.value(index) as f64)
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null)
         }
         DataType::Float64 => {
-            let arr = array.as_primitive::<arrow::datatypes::Float64Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Float64Type>();
             serde_json::Number::from_f64(arr.value(index))
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null)
@@ -514,7 +523,7 @@ fn array_value_to_json(array: &ArrayRef, index: usize) -> serde_json::Value {
 }
 
 fn array_value_to_string(array: &ArrayRef, index: usize) -> String {
-    use arrow::array::*;
+    use datafusion::arrow::array::*;
 
     match array.data_type() {
         DataType::Boolean => {
@@ -522,43 +531,43 @@ fn array_value_to_string(array: &ArrayRef, index: usize) -> String {
             arr.value(index).to_string()
         }
         DataType::Int8 => {
-            let arr = array.as_primitive::<arrow::datatypes::Int8Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Int8Type>();
             arr.value(index).to_string()
         }
         DataType::Int16 => {
-            let arr = array.as_primitive::<arrow::datatypes::Int16Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Int16Type>();
             arr.value(index).to_string()
         }
         DataType::Int32 => {
-            let arr = array.as_primitive::<arrow::datatypes::Int32Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Int32Type>();
             arr.value(index).to_string()
         }
         DataType::Int64 => {
-            let arr = array.as_primitive::<arrow::datatypes::Int64Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Int64Type>();
             arr.value(index).to_string()
         }
         DataType::UInt8 => {
-            let arr = array.as_primitive::<arrow::datatypes::UInt8Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::UInt8Type>();
             arr.value(index).to_string()
         }
         DataType::UInt16 => {
-            let arr = array.as_primitive::<arrow::datatypes::UInt16Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::UInt16Type>();
             arr.value(index).to_string()
         }
         DataType::UInt32 => {
-            let arr = array.as_primitive::<arrow::datatypes::UInt32Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::UInt32Type>();
             arr.value(index).to_string()
         }
         DataType::UInt64 => {
-            let arr = array.as_primitive::<arrow::datatypes::UInt64Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::UInt64Type>();
             arr.value(index).to_string()
         }
         DataType::Float32 => {
-            let arr = array.as_primitive::<arrow::datatypes::Float32Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Float32Type>();
             arr.value(index).to_string()
         }
         DataType::Float64 => {
-            let arr = array.as_primitive::<arrow::datatypes::Float64Type>();
+            let arr = array.as_primitive::<datafusion::arrow::datatypes::Float64Type>();
             arr.value(index).to_string()
         }
         DataType::Utf8 => {
@@ -580,7 +589,7 @@ fn array_value_to_string(array: &ArrayRef, index: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int64Array;
+    use datafusion::arrow::array::Int64Array;
     use std::sync::Arc;
 
     #[test]

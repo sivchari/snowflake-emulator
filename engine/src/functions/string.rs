@@ -25,11 +25,12 @@
 
 use std::any::Any;
 
-use arrow::array::{Int64Array, StringArray};
-use arrow::datatypes::DataType;
+use datafusion::arrow::array::{Int64Array, StringArray};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 use regex::Regex;
 
@@ -37,7 +38,7 @@ use regex::Regex;
 // SPLIT(string, delimiter)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SplitFunc {
     signature: Signature,
 }
@@ -76,14 +77,14 @@ impl ScalarUDFImpl for SplitFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "SPLIT requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let (string_val, delimiter_val) = match (&args[0], &args[1]) {
+        let (string_val, delimiter_val) = match (&args.args[0], &args.args[1]) {
             (ColumnarValue::Scalar(s), ColumnarValue::Scalar(d)) => {
                 let string_opt = match s {
                     ScalarValue::Utf8(v) | ScalarValue::LargeUtf8(v) => v.clone(),
@@ -131,7 +132,7 @@ pub fn split() -> ScalarUDF {
 // STRTOK(string, delimiters, part_number)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct StrtokFunc {
     signature: Signature,
 }
@@ -167,23 +168,23 @@ impl ScalarUDFImpl for StrtokFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.is_empty() || args.len() > 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() || args.args.len() > 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "STRTOK requires 1-3 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
 
-        let delimiters = if args.len() >= 2 {
-            extract_string_scalar(&args[1])?.unwrap_or_else(|| " ".to_string())
+        let delimiters = if args.args.len() >= 2 {
+            extract_string_scalar(&args.args[1])?.unwrap_or_else(|| " ".to_string())
         } else {
             " ".to_string()
         };
 
-        let part_number = if args.len() == 3 {
-            extract_int_scalar(&args[2])?.unwrap_or(1)
+        let part_number = if args.args.len() == 3 {
+            extract_int_scalar(&args.args[2])?.unwrap_or(1)
         } else {
             1
         };
@@ -220,7 +221,7 @@ pub fn strtok() -> ScalarUDF {
 // STRTOK_TO_ARRAY(string, delimiters)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct StrtokToArrayFunc {
     signature: Signature,
 }
@@ -256,17 +257,17 @@ impl ScalarUDFImpl for StrtokToArrayFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.is_empty() || args.len() > 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() || args.args.len() > 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "STRTOK_TO_ARRAY requires 1-2 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
 
-        let delimiters = if args.len() == 2 {
-            extract_string_scalar(&args[1])?.unwrap_or_else(|| " ".to_string())
+        let delimiters = if args.args.len() == 2 {
+            extract_string_scalar(&args.args[1])?.unwrap_or_else(|| " ".to_string())
         } else {
             " ".to_string()
         };
@@ -299,7 +300,7 @@ pub fn strtok_to_array() -> ScalarUDF {
 // REGEXP_LIKE(string, pattern)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RegexpLikeFunc {
     signature: Signature,
 }
@@ -338,15 +339,15 @@ impl ScalarUDFImpl for RegexpLikeFunc {
         Ok(DataType::Boolean)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "REGEXP_LIKE requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let pattern_opt = extract_string_scalar(&args[1])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let pattern_opt = extract_string_scalar(&args.args[1])?;
 
         let result = match (string_opt, pattern_opt) {
             (Some(s), Some(p)) => match Regex::new(&p) {
@@ -372,7 +373,7 @@ pub fn regexp_like() -> ScalarUDF {
 // REGEXP_SUBSTR(string, pattern)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RegexpSubstrFunc {
     signature: Signature,
 }
@@ -411,15 +412,15 @@ impl ScalarUDFImpl for RegexpSubstrFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "REGEXP_SUBSTR requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let pattern_opt = extract_string_scalar(&args[1])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let pattern_opt = extract_string_scalar(&args.args[1])?;
 
         let result = match (string_opt, pattern_opt) {
             (Some(s), Some(p)) => match Regex::new(&p) {
@@ -445,7 +446,7 @@ pub fn regexp_substr() -> ScalarUDF {
 // REGEXP_REPLACE(string, pattern, replacement)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RegexpReplaceFunc {
     signature: Signature,
 }
@@ -484,16 +485,16 @@ impl ScalarUDFImpl for RegexpReplaceFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "REGEXP_REPLACE requires exactly 3 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let pattern_opt = extract_string_scalar(&args[1])?;
-        let replacement_opt = extract_string_scalar(&args[2])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let pattern_opt = extract_string_scalar(&args.args[1])?;
+        let replacement_opt = extract_string_scalar(&args.args[2])?;
 
         let result = match (string_opt, pattern_opt, replacement_opt) {
             (Some(s), Some(p), Some(r)) => match Regex::new(&p) {
@@ -519,7 +520,7 @@ pub fn regexp_replace() -> ScalarUDF {
 // REGEXP_COUNT(string, pattern)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RegexpCountFunc {
     signature: Signature,
 }
@@ -558,15 +559,15 @@ impl ScalarUDFImpl for RegexpCountFunc {
         Ok(DataType::Int64)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "REGEXP_COUNT requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let pattern_opt = extract_string_scalar(&args[1])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let pattern_opt = extract_string_scalar(&args.args[1])?;
 
         let result = match (string_opt, pattern_opt) {
             (Some(s), Some(p)) => match Regex::new(&p) {
@@ -592,7 +593,7 @@ pub fn regexp_count() -> ScalarUDF {
 // CONTAINS(string, substring)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ContainsFunc {
     signature: Signature,
 }
@@ -631,15 +632,15 @@ impl ScalarUDFImpl for ContainsFunc {
         Ok(DataType::Boolean)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "CONTAINS requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let substring_opt = extract_string_scalar(&args[1])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let substring_opt = extract_string_scalar(&args.args[1])?;
 
         let result = match (string_opt, substring_opt) {
             (Some(s), Some(sub)) => Some(s.contains(&sub)),
@@ -662,7 +663,7 @@ pub fn contains() -> ScalarUDF {
 // STARTSWITH(string, prefix)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct StartswithFunc {
     signature: Signature,
 }
@@ -701,15 +702,15 @@ impl ScalarUDFImpl for StartswithFunc {
         Ok(DataType::Boolean)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "STARTSWITH requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let prefix_opt = extract_string_scalar(&args[1])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let prefix_opt = extract_string_scalar(&args.args[1])?;
 
         let result = match (string_opt, prefix_opt) {
             (Some(s), Some(prefix)) => Some(s.starts_with(&prefix)),
@@ -732,7 +733,7 @@ pub fn startswith() -> ScalarUDF {
 // ENDSWITH(string, suffix)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct EndswithFunc {
     signature: Signature,
 }
@@ -771,15 +772,15 @@ impl ScalarUDFImpl for EndswithFunc {
         Ok(DataType::Boolean)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ENDSWITH requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let suffix_opt = extract_string_scalar(&args[1])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let suffix_opt = extract_string_scalar(&args.args[1])?;
 
         let result = match (string_opt, suffix_opt) {
             (Some(s), Some(suffix)) => Some(s.ends_with(&suffix)),
@@ -802,7 +803,7 @@ pub fn endswith() -> ScalarUDF {
 // CHARINDEX(substring, string, [start_pos])
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct CharindexFunc {
     signature: Signature,
 }
@@ -838,17 +839,17 @@ impl ScalarUDFImpl for CharindexFunc {
         Ok(DataType::Int64)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() < 2 || args.len() > 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() < 2 || args.args.len() > 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "CHARINDEX requires 2 or 3 arguments".to_string(),
             ));
         }
 
-        let substring_opt = extract_string_scalar(&args[0])?;
-        let string_opt = extract_string_scalar(&args[1])?;
-        let start_pos = if args.len() == 3 {
-            extract_int_scalar(&args[2])?.unwrap_or(1)
+        let substring_opt = extract_string_scalar(&args.args[0])?;
+        let string_opt = extract_string_scalar(&args.args[1])?;
+        let start_pos = if args.args.len() == 3 {
+            extract_int_scalar(&args.args[2])?.unwrap_or(1)
         } else {
             1
         };
@@ -884,7 +885,7 @@ pub fn charindex() -> ScalarUDF {
 // REVERSE(string)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ReverseFunc {
     signature: Signature,
 }
@@ -920,14 +921,14 @@ impl ScalarUDFImpl for ReverseFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "REVERSE requires exactly 1 argument".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
 
         let result = string_opt.map(|s| s.chars().rev().collect::<String>());
 
@@ -947,7 +948,7 @@ pub fn reverse() -> ScalarUDF {
 // LPAD(string, length, pad_string)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct LpadFunc {
     signature: Signature,
 }
@@ -983,17 +984,17 @@ impl ScalarUDFImpl for LpadFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() < 2 || args.len() > 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() < 2 || args.args.len() > 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "LPAD requires 2 or 3 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let length = extract_int_scalar(&args[1])?.unwrap_or(0);
-        let pad_string = if args.len() == 3 {
-            extract_string_scalar(&args[2])?.unwrap_or_else(|| " ".to_string())
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let length = extract_int_scalar(&args.args[1])?.unwrap_or(0);
+        let pad_string = if args.args.len() == 3 {
+            extract_string_scalar(&args.args[2])?.unwrap_or_else(|| " ".to_string())
         } else {
             " ".to_string()
         };
@@ -1031,7 +1032,7 @@ pub fn lpad() -> ScalarUDF {
 // RPAD(string, length, pad_string)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RpadFunc {
     signature: Signature,
 }
@@ -1067,17 +1068,17 @@ impl ScalarUDFImpl for RpadFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() < 2 || args.len() > 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() < 2 || args.args.len() > 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "RPAD requires 2 or 3 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let length = extract_int_scalar(&args[1])?.unwrap_or(0);
-        let pad_string = if args.len() == 3 {
-            extract_string_scalar(&args[2])?.unwrap_or_else(|| " ".to_string())
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let length = extract_int_scalar(&args.args[1])?.unwrap_or(0);
+        let pad_string = if args.args.len() == 3 {
+            extract_string_scalar(&args.args[2])?.unwrap_or_else(|| " ".to_string())
         } else {
             " ".to_string()
         };
@@ -1115,7 +1116,7 @@ pub fn rpad() -> ScalarUDF {
 // TRANSLATE(string, source_chars, target_chars)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct TranslateFunc {
     signature: Signature,
 }
@@ -1154,16 +1155,16 @@ impl ScalarUDFImpl for TranslateFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        if args.len() != 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TRANSLATE requires exactly 3 arguments".to_string(),
             ));
         }
 
-        let string_opt = extract_string_scalar(&args[0])?;
-        let source_chars_opt = extract_string_scalar(&args[1])?;
-        let target_chars_opt = extract_string_scalar(&args[2])?;
+        let string_opt = extract_string_scalar(&args.args[0])?;
+        let source_chars_opt = extract_string_scalar(&args.args[1])?;
+        let target_chars_opt = extract_string_scalar(&args.args[2])?;
 
         let result = match (string_opt, source_chars_opt, target_chars_opt) {
             (Some(s), Some(source), Some(target)) => {
@@ -1270,6 +1271,7 @@ fn extract_int_scalar(col: &ColumnarValue) -> Result<Option<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::{invoke_udf_bool, invoke_udf_int64, invoke_udf_string};
 
     #[test]
     fn test_split() {
@@ -1279,7 +1281,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, r#"["a","b","c"]"#);
         } else {
@@ -1296,7 +1298,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "b");
         } else {
@@ -1312,7 +1314,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(".".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, r#"["a","b","c"]"#);
         } else {
@@ -1328,7 +1330,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("[0-9]+".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_bool(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) = result {
             assert!(b);
         } else {
@@ -1344,7 +1346,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("[0-9]+".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "123");
         } else {
@@ -1361,7 +1363,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("XXX".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "abcXXXdef");
         } else {
@@ -1377,7 +1379,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("ab".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_int64(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(n))) = result {
             assert_eq!(n, 2);
         } else {
@@ -1393,7 +1395,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("world".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_bool(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) = result {
             assert!(b);
         } else {
@@ -1409,7 +1411,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("hello".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_bool(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) = result {
             assert!(b);
         } else {
@@ -1425,7 +1427,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("world".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_bool(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) = result {
             assert!(b);
         } else {
@@ -1441,7 +1443,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("foobar".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_int64(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(n))) = result {
             assert_eq!(n, 4);
         } else {
@@ -1458,7 +1460,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(3))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_int64(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(n))) = result {
             assert_eq!(n, 3); // Second 'o' at position 3
         } else {
@@ -1474,7 +1476,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("foobar".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_int64(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(n))) = result {
             assert_eq!(n, 0);
         } else {
@@ -1489,7 +1491,7 @@ mod tests {
             "hello".to_string(),
         )))];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "olleh");
         } else {
@@ -1506,7 +1508,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("0".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "00123");
         } else {
@@ -1522,7 +1524,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(5))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "   ab");
         } else {
@@ -1539,7 +1541,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("0".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "12300");
         } else {
@@ -1556,7 +1558,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("123".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "123");
         } else {
@@ -1573,7 +1575,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("12345".to_string()))),
         ];
 
-        let result = func.invoke(&args).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "h2ll4"); // e->2, o->4
         } else {

@@ -16,17 +16,18 @@
 
 use std::any::Any;
 
-use arrow::datatypes::DataType;
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 // ============================================================================
 // ARRAY_CONSTRUCT(...)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayConstructFunc {
     signature: Signature,
 }
@@ -62,10 +63,10 @@ impl ScalarUDFImpl for ArrayConstructFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        let mut elements = Vec::with_capacity(args.len());
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let mut elements = Vec::with_capacity(args.args.len());
 
-        for arg in args {
+        for arg in &args.args {
             match arg {
                 ColumnarValue::Scalar(scalar) => {
                     let json_value = scalar_to_json_value(scalar);
@@ -98,7 +99,7 @@ pub fn array_construct() -> ScalarUDF {
 // ARRAY_CONSTRUCT_COMPACT(...)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayConstructCompactFunc {
     signature: Signature,
 }
@@ -134,10 +135,10 @@ impl ScalarUDFImpl for ArrayConstructCompactFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        let mut elements = Vec::with_capacity(args.len());
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let mut elements = Vec::with_capacity(args.args.len());
 
-        for arg in args {
+        for arg in &args.args {
             match arg {
                 ColumnarValue::Scalar(scalar) => {
                     if !scalar.is_null() {
@@ -172,7 +173,7 @@ pub fn array_construct_compact() -> ScalarUDF {
 // ARRAY_APPEND(array, element)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayAppendFunc {
     signature: Signature,
 }
@@ -208,15 +209,15 @@ impl ScalarUDFImpl for ArrayAppendFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ARRAY_APPEND requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let array_str = extract_string_scalar(&args[0])?;
-        let element = scalar_to_json_value_from_columnar(&args[1]);
+        let array_str = extract_string_scalar(&args.args[0])?;
+        let element = scalar_to_json_value_from_columnar(&args.args[1]);
 
         let result = match array_str {
             Some(s) => {
@@ -247,7 +248,7 @@ pub fn array_append() -> ScalarUDF {
 // ARRAY_PREPEND(array, element)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayPrependFunc {
     signature: Signature,
 }
@@ -283,15 +284,15 @@ impl ScalarUDFImpl for ArrayPrependFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ARRAY_PREPEND requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let array_str = extract_string_scalar(&args[0])?;
-        let element = scalar_to_json_value_from_columnar(&args[1]);
+        let array_str = extract_string_scalar(&args.args[0])?;
+        let element = scalar_to_json_value_from_columnar(&args.args[1]);
 
         let result = match array_str {
             Some(s) => {
@@ -322,7 +323,7 @@ pub fn array_prepend() -> ScalarUDF {
 // ARRAY_CAT(array1, array2)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayCatFunc {
     signature: Signature,
 }
@@ -358,15 +359,15 @@ impl ScalarUDFImpl for ArrayCatFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ARRAY_CAT requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let arr1_str = extract_string_scalar(&args[0])?;
-        let arr2_str = extract_string_scalar(&args[1])?;
+        let arr1_str = extract_string_scalar(&args.args[0])?;
+        let arr2_str = extract_string_scalar(&args.args[1])?;
 
         let result = match (arr1_str, arr2_str) {
             (Some(s1), Some(s2)) => {
@@ -400,7 +401,7 @@ pub fn array_cat() -> ScalarUDF {
 // ARRAY_SLICE(array, from, to)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArraySliceFunc {
     signature: Signature,
 }
@@ -436,16 +437,16 @@ impl ScalarUDFImpl for ArraySliceFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ARRAY_SLICE requires exactly 3 arguments".to_string(),
             ));
         }
 
-        let array_str = extract_string_scalar(&args[0])?;
-        let from_idx = extract_int_scalar(&args[1])?;
-        let to_idx = extract_int_scalar(&args[2])?;
+        let array_str = extract_string_scalar(&args.args[0])?;
+        let from_idx = extract_int_scalar(&args.args[1])?;
+        let to_idx = extract_int_scalar(&args.args[2])?;
 
         let result = match (array_str, from_idx, to_idx) {
             (Some(s), Some(from), Some(to)) => {
@@ -484,7 +485,7 @@ pub fn array_slice() -> ScalarUDF {
 // ARRAY_CONTAINS(element, array)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayContainsFunc {
     signature: Signature,
 }
@@ -520,15 +521,15 @@ impl ScalarUDFImpl for ArrayContainsFunc {
         Ok(DataType::Boolean)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ARRAY_CONTAINS requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let element = scalar_to_json_value_from_columnar(&args[0]);
-        let array_str = extract_string_scalar(&args[1])?;
+        let element = scalar_to_json_value_from_columnar(&args.args[0]);
+        let array_str = extract_string_scalar(&args.args[1])?;
 
         let result = match array_str {
             Some(s) => match serde_json::from_str::<serde_json::Value>(&s) {
@@ -554,7 +555,7 @@ pub fn array_contains() -> ScalarUDF {
 // ARRAY_POSITION(element, array)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayPositionFunc {
     signature: Signature,
 }
@@ -590,15 +591,15 @@ impl ScalarUDFImpl for ArrayPositionFunc {
         Ok(DataType::Int64)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ARRAY_POSITION requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let element = scalar_to_json_value_from_columnar(&args[0]);
-        let array_str = extract_string_scalar(&args[1])?;
+        let element = scalar_to_json_value_from_columnar(&args.args[0]);
+        let array_str = extract_string_scalar(&args.args[1])?;
 
         let result = match array_str {
             Some(s) => match serde_json::from_str::<serde_json::Value>(&s) {
@@ -626,7 +627,7 @@ pub fn array_position() -> ScalarUDF {
 // ARRAY_DISTINCT(array)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayDistinctFunc {
     signature: Signature,
 }
@@ -662,14 +663,14 @@ impl ScalarUDFImpl for ArrayDistinctFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.is_empty() {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ARRAY_DISTINCT requires exactly 1 argument".to_string(),
             ));
         }
 
-        let array_str = extract_string_scalar(&args[0])?;
+        let array_str = extract_string_scalar(&args.args[0])?;
 
         let result = match array_str {
             Some(s) => match serde_json::from_str::<serde_json::Value>(&s) {
@@ -703,7 +704,7 @@ pub fn array_distinct() -> ScalarUDF {
 // ARRAY_FLATTEN(array)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ArrayFlattenFunc {
     signature: Signature,
 }
@@ -739,14 +740,14 @@ impl ScalarUDFImpl for ArrayFlattenFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.is_empty() {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "ARRAY_FLATTEN requires exactly 1 argument".to_string(),
             ));
         }
 
-        let array_str = extract_string_scalar(&args[0])?;
+        let array_str = extract_string_scalar(&args.args[0])?;
 
         let result = match array_str {
             Some(s) => match serde_json::from_str::<serde_json::Value>(&s) {
@@ -846,6 +847,7 @@ fn extract_int_scalar(col: &ColumnarValue) -> Result<Option<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::{invoke_udf_bool, invoke_udf_int64, invoke_udf_string};
 
     #[test]
     fn test_array_construct() {
@@ -855,7 +857,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(3))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -874,7 +876,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Null),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(3))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -892,7 +894,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("[1, 2]".to_string()))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(3))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -910,7 +912,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("[1, 2]".to_string()))),
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("[3, 4]".to_string()))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -927,7 +929,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("[1, 2, 3]".to_string()))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_bool(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) = result {
             assert!(b);
@@ -943,7 +945,7 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
             ColumnarValue::Scalar(ScalarValue::Utf8(Some("[1, 2, 3]".to_string()))),
         ];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_int64(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(p))) = result {
             assert_eq!(p, 1); // 0-indexed position
@@ -958,7 +960,7 @@ mod tests {
         let args = vec![ColumnarValue::Scalar(ScalarValue::Utf8(Some(
             "[1, 2, 2, 3, 1]".to_string(),
         )))];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -974,7 +976,7 @@ mod tests {
         let args = vec![ColumnarValue::Scalar(ScalarValue::Utf8(Some(
             "[[1, 2], [3, 4]]".to_string(),
         )))];
-        let result = func.invoke_batch(&args, 1).unwrap();
+        let result = invoke_udf_string(&func, &args).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();

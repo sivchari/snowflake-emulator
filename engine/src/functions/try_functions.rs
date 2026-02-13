@@ -5,12 +5,13 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, Float64Array, Int64Array, StringArray};
-use arrow::datatypes::DataType;
 use chrono::{Datelike, NaiveDate};
+use datafusion::arrow::array::{Array, Float64Array, Int64Array, StringArray};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 // ============================================================================
@@ -21,7 +22,7 @@ use datafusion::logical_expr::{
 ///
 /// Syntax: TRY_PARSE_JSON(string_expression)
 /// Returns the input string as JSON, or NULL if parsing fails.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct TryParseJsonFunc {
     signature: Signature,
 }
@@ -57,14 +58,14 @@ impl ScalarUDFImpl for TryParseJsonFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TRY_PARSE_JSON requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
@@ -97,7 +98,7 @@ impl ScalarUDFImpl for TryParseJsonFunc {
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
             _ => {
-                let arr = input.to_array(num_rows)?;
+                let arr = input.to_array(args.number_rows)?;
                 let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
                     datafusion::error::DataFusionError::Execution(
                         "TRY_PARSE_JSON argument must be a string".to_string(),
@@ -138,7 +139,7 @@ pub fn try_parse_json() -> ScalarUDF {
 ///
 /// Syntax: TRY_TO_NUMBER(string_expression)
 /// Returns the numeric value, or NULL if conversion fails.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct TryToNumberFunc {
     signature: Signature,
 }
@@ -174,14 +175,14 @@ impl ScalarUDFImpl for TryToNumberFunc {
         Ok(DataType::Float64)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TRY_TO_NUMBER requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
@@ -202,7 +203,7 @@ impl ScalarUDFImpl for TryToNumberFunc {
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
             _ => {
-                let arr = input.to_array(num_rows)?;
+                let arr = input.to_array(args.number_rows)?;
                 let result = try_to_number_array(&arr)?;
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
@@ -252,7 +253,7 @@ pub fn try_to_number() -> ScalarUDF {
 ///
 /// Syntax: TRY_TO_DATE(string_expression)
 /// Returns the date value, or NULL if conversion fails.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct TryToDateFunc {
     signature: Signature,
 }
@@ -288,14 +289,14 @@ impl ScalarUDFImpl for TryToDateFunc {
         Ok(DataType::Date32)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TRY_TO_DATE requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
@@ -313,7 +314,7 @@ impl ScalarUDFImpl for TryToDateFunc {
                 Ok(ColumnarValue::Array(result))
             }
             _ => {
-                let arr = input.to_array(num_rows)?;
+                let arr = input.to_array(args.number_rows)?;
                 let result = try_to_date_array(&arr)?;
                 Ok(ColumnarValue::Array(result))
             }
@@ -341,7 +342,7 @@ fn try_parse_date(s: &str) -> Option<i32> {
 }
 
 fn try_to_date_array(array: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
-    use arrow::array::Date32Array;
+    use datafusion::arrow::array::Date32Array;
 
     match array.data_type() {
         DataType::Utf8 => {
@@ -369,7 +370,7 @@ pub fn try_to_date() -> ScalarUDF {
 ///
 /// Syntax: TRY_TO_BOOLEAN(string_expression)
 /// Returns true/false, or NULL if conversion fails.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct TryToBooleanFunc {
     signature: Signature,
 }
@@ -405,14 +406,14 @@ impl ScalarUDFImpl for TryToBooleanFunc {
         Ok(DataType::Boolean)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TRY_TO_BOOLEAN requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => {
@@ -433,7 +434,7 @@ impl ScalarUDFImpl for TryToBooleanFunc {
                 Ok(ColumnarValue::Array(result))
             }
             _ => {
-                let arr = input.to_array(num_rows)?;
+                let arr = input.to_array(args.number_rows)?;
                 let result = try_to_boolean_array(&arr)?;
                 Ok(ColumnarValue::Array(result))
             }
@@ -454,7 +455,7 @@ fn try_parse_boolean(s: &str) -> Option<bool> {
 }
 
 fn try_to_boolean_array(array: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
-    use arrow::array::BooleanArray;
+    use datafusion::arrow::array::BooleanArray;
 
     match array.data_type() {
         DataType::Utf8 => {
@@ -485,6 +486,9 @@ pub fn try_to_boolean() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::{
+        invoke_udf_bool, invoke_udf_date32, invoke_udf_float64, invoke_udf_string,
+    };
 
     #[test]
     fn test_try_parse_json_valid() {
@@ -493,7 +497,7 @@ mod tests {
         let input =
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(r#"{"key": "value"}"#.to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert!(s.contains("key"));
@@ -509,7 +513,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("not valid json".to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(v)) = result {
             assert!(v.is_none());
@@ -524,7 +528,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("42.5".to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_float64(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) = result {
             assert!((v - 42.5).abs() < 0.001);
@@ -539,7 +543,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("not a number".to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_float64(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Float64(v)) = result {
             assert!(v.is_none());
@@ -554,7 +558,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_date32(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Date32(Some(_))) = result {
             // Successfully parsed
@@ -569,7 +573,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("not a date".to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_date32(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Date32(v)) = result {
             assert!(v.is_none());
@@ -584,7 +588,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("true".to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_bool(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(v))) = result {
             assert!(v);
@@ -599,7 +603,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("no".to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_bool(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Boolean(Some(v))) = result {
             assert!(!v);
@@ -614,7 +618,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("maybe".to_string())));
 
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_bool(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Boolean(v)) = result {
             assert!(v.is_none());
