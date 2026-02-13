@@ -1541,8 +1541,10 @@ impl Executor {
             let new_batches: Vec<RecordBatch> = batches
                 .into_iter()
                 .map(|batch| {
-                    let null_col = datafusion::arrow::array::new_null_array(&arrow_type, batch.num_rows());
-                    let mut columns: Vec<Arc<dyn datafusion::arrow::array::Array>> = batch.columns().to_vec();
+                    let null_col =
+                        datafusion::arrow::array::new_null_array(&arrow_type, batch.num_rows());
+                    let mut columns: Vec<Arc<dyn datafusion::arrow::array::Array>> =
+                        batch.columns().to_vec();
                     columns.push(null_col);
                     RecordBatch::try_new(new_schema.clone(), columns)
                         .expect("Schema mismatch during column add")
