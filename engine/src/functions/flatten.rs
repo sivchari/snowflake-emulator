@@ -25,23 +25,24 @@ use super::helpers::safe_index;
 /// Extract string values from an array that could be StringArray or StringViewArray.
 /// Returns a Vec of Option<String> for easier processing.
 fn extract_strings_from_array(arr: &Arc<dyn Array>) -> Option<Vec<Option<String>>> {
-    if let Some(str_arr) = arr.as_any().downcast_ref::<StringArray>() {
-        Some(
+    arr.as_any()
+        .downcast_ref::<StringArray>()
+        .map(|str_arr| {
             str_arr
                 .iter()
                 .map(|opt| opt.map(|s| s.to_string()))
-                .collect(),
-        )
-    } else if let Some(str_arr) = arr.as_any().downcast_ref::<StringViewArray>() {
-        Some(
-            str_arr
-                .iter()
-                .map(|opt| opt.map(|s| s.to_string()))
-                .collect(),
-        )
-    } else {
-        None
-    }
+                .collect()
+        })
+        .or_else(|| {
+            arr.as_any()
+                .downcast_ref::<StringViewArray>()
+                .map(|str_arr| {
+                    str_arr
+                        .iter()
+                        .map(|opt| opt.map(|s| s.to_string()))
+                        .collect()
+                })
+        })
 }
 
 // ============================================================================
