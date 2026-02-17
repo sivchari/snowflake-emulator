@@ -1,4 +1,4 @@
 [tagpr]
 	vPrefix = true
 	releaseBranch = main
-	versionFile = engine/Cargo.toml,server/Cargo.toml
+	versionFile = VERSION
