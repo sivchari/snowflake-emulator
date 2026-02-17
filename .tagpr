@@ -1,0 +1,4 @@
+[tagpr]
+	vPrefix = true
+	releaseBranch = main
+	versionFile = engine/Cargo.toml,server/Cargo.toml,cli/Cargo.toml
