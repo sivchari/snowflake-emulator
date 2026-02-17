@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, StringArray};
 use chrono::{Datelike, NaiveDate};
+use datafusion::arrow::array::{Array, StringArray};
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 

@@ -8,14 +8,15 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, Date32Array, Int64Array, StringArray};
-use arrow::datatypes::DataType;
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
+use datafusion::arrow::array::{Array, Date32Array, Int64Array, StringArray};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 
 use super::helpers::{clamp_day_to_month, nanos_to_components};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 // ============================================================================
@@ -28,7 +29,7 @@ use datafusion::logical_expr::{
 /// Returns a date/time with the specified value added.
 ///
 /// Supported parts: year, month, day, hour, minute, second
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct DateAddFunc {
     signature: Signature,
 }
@@ -65,16 +66,16 @@ impl ScalarUDFImpl for DateAddFunc {
         Ok(arg_types.get(2).cloned().unwrap_or(DataType::Date32))
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "DATEADD requires exactly 3 arguments".to_string(),
             ));
         }
 
-        let part = &args[0];
-        let value = &args[1];
-        let date_expr = &args[2];
+        let part = &args.args[0];
+        let value = &args.args[1];
+        let date_expr = &args.args[2];
 
         // Get the date part string
         let part_str = match part {
@@ -319,7 +320,7 @@ pub fn dateadd() -> ScalarUDF {
 ///
 /// Syntax: DATEDIFF(date_or_time_part, date_or_time_expr1, date_or_time_expr2)
 /// Returns the number of date/time parts between the two expressions.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct DateDiffFunc {
     signature: Signature,
 }
@@ -355,16 +356,16 @@ impl ScalarUDFImpl for DateDiffFunc {
         Ok(DataType::Int64)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "DATEDIFF requires exactly 3 arguments".to_string(),
             ));
         }
 
-        let part = &args[0];
-        let date1 = &args[1];
-        let date2 = &args[2];
+        let part = &args.args[0];
+        let date1 = &args.args[1];
+        let date2 = &args.args[2];
 
         // Get the date part string
         let part_str = match part {
@@ -383,8 +384,8 @@ impl ScalarUDFImpl for DateDiffFunc {
         }
 
         // Handle array case
-        let arr1 = date1.to_array(num_rows)?;
-        let arr2 = date2.to_array(num_rows)?;
+        let arr1 = date1.to_array(args.number_rows)?;
+        let arr2 = date2.to_array(args.number_rows)?;
         let result = datediff_arrays(&part_str, &arr1, &arr2)?;
         Ok(ColumnarValue::Array(Arc::new(result)))
     }
@@ -555,7 +556,7 @@ pub fn datediff() -> ScalarUDF {
 ///
 /// Syntax: TO_DATE(string_expr [, format])
 /// Returns a date value from the input string.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ToDateFunc {
     signature: Signature,
 }
@@ -591,14 +592,14 @@ impl ScalarUDFImpl for ToDateFunc {
         Ok(DataType::Date32)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.is_empty() {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TO_DATE requires at least 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         // Handle scalar case
         match input {
@@ -711,7 +712,7 @@ pub fn to_date() -> ScalarUDF {
 ///
 /// Syntax: TO_TIMESTAMP(string_expr [, format])
 /// Returns a timestamp value from the input string.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ToTimestampFunc {
     signature: Signature,
 }
@@ -745,19 +746,19 @@ impl ScalarUDFImpl for ToTimestampFunc {
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         Ok(DataType::Timestamp(
-            arrow::datatypes::TimeUnit::Nanosecond,
+            datafusion::arrow::datatypes::TimeUnit::Nanosecond,
             None,
         ))
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.is_empty() {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "TO_TIMESTAMP requires at least 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(scalar) => {
@@ -831,7 +832,7 @@ fn to_timestamp_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
 }
 
 fn to_timestamp_array(array: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
-    use arrow::array::TimestampNanosecondArray;
+    use datafusion::arrow::array::TimestampNanosecondArray;
 
     match array.data_type() {
         DataType::Utf8 => {
@@ -880,7 +881,7 @@ pub fn to_timestamp_udf() -> ScalarUDF {
 ///
 /// Syntax: LAST_DAY(date_expr)
 /// Returns the last day of the month for the given date.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct LastDayFunc {
     signature: Signature,
 }
@@ -916,14 +917,14 @@ impl ScalarUDFImpl for LastDayFunc {
         Ok(DataType::Date32)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "LAST_DAY requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(scalar) => {
@@ -1029,7 +1030,7 @@ pub fn last_day() -> ScalarUDF {
 ///
 /// Syntax: DAYNAME(date_expr)
 /// Returns the name of the weekday (e.g., 'Mon', 'Tue', etc.)
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct DayNameFunc {
     signature: Signature,
 }
@@ -1065,14 +1066,14 @@ impl ScalarUDFImpl for DayNameFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "DAYNAME requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(scalar) => {
@@ -1171,7 +1172,7 @@ pub fn dayname() -> ScalarUDF {
 ///
 /// Syntax: MONTHNAME(date_expr)
 /// Returns the name of the month (e.g., 'Jan', 'Feb', etc.)
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct MonthNameFunc {
     signature: Signature,
 }
@@ -1207,14 +1208,14 @@ impl ScalarUDFImpl for MonthNameFunc {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "MONTHNAME requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(scalar) => {
@@ -1318,6 +1319,7 @@ pub fn monthname() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::{invoke_udf_date32, invoke_udf_int64, invoke_udf_string};
 
     #[test]
     fn test_dateadd_days() {
@@ -1327,7 +1329,7 @@ mod tests {
         let value = ColumnarValue::Scalar(ScalarValue::Int64(Some(5)));
         let date = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
 
-        let result = func.invoke_batch(&[part, value, date], 1).unwrap();
+        let result = invoke_udf_string(&func, &[part, value, date]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "2024-01-20");
@@ -1344,7 +1346,7 @@ mod tests {
         let value = ColumnarValue::Scalar(ScalarValue::Int64(Some(2)));
         let date = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
 
-        let result = func.invoke_batch(&[part, value, date], 1).unwrap();
+        let result = invoke_udf_string(&func, &[part, value, date]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "2024-03-15");
@@ -1361,7 +1363,7 @@ mod tests {
         let value = ColumnarValue::Scalar(ScalarValue::Int64(Some(-10)));
         let date = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
 
-        let result = func.invoke_batch(&[part, value, date], 1).unwrap();
+        let result = invoke_udf_string(&func, &[part, value, date]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) = result {
             assert_eq!(s, "2024-01-05");
@@ -1378,7 +1380,7 @@ mod tests {
         let date1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-01".to_string())));
         let date2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
 
-        let result = func.invoke_batch(&[part, date1, date2], 1).unwrap();
+        let result = invoke_udf_int64(&func, &[part, date1, date2]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) = result {
             assert_eq!(v, 14);
@@ -1395,7 +1397,7 @@ mod tests {
         let date1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
         let date2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-06-15".to_string())));
 
-        let result = func.invoke_batch(&[part, date1, date2], 1).unwrap();
+        let result = invoke_udf_int64(&func, &[part, date1, date2]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) = result {
             assert_eq!(v, 5);
@@ -1412,7 +1414,7 @@ mod tests {
         let date1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2020-06-15".to_string())));
         let date2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-06-15".to_string())));
 
-        let result = func.invoke_batch(&[part, date1, date2], 1).unwrap();
+        let result = invoke_udf_int64(&func, &[part, date1, date2]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) = result {
             assert_eq!(v, 4);
@@ -1429,7 +1431,7 @@ mod tests {
         let dt1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-01 10:00:00".to_string())));
         let dt2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-01 15:30:00".to_string())));
 
-        let result = func.invoke_batch(&[part, dt1, dt2], 1).unwrap();
+        let result = invoke_udf_int64(&func, &[part, dt1, dt2]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) = result {
             assert_eq!(v, 5);
@@ -1443,7 +1445,7 @@ mod tests {
         let func = ToDateFunc::new();
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_date32(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Date32(Some(days))) = result {
             let date = NaiveDate::from_num_days_from_ce_opt(days + 719163).unwrap();
@@ -1460,7 +1462,7 @@ mod tests {
         let func = LastDayFunc::new();
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-02-15".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_date32(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Date32(Some(days))) = result {
             let date = NaiveDate::from_num_days_from_ce_opt(days + 719163).unwrap();
@@ -1478,7 +1480,7 @@ mod tests {
 
         // 2024-01-15 is a Monday
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-01-15".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(name))) = result {
             assert_eq!(name, "Mon");
@@ -1492,7 +1494,7 @@ mod tests {
         let func = MonthNameFunc::new();
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("2024-03-15".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(name))) = result {
             assert_eq!(name, "Mar");

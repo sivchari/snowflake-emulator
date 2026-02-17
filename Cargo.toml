@@ -4,8 +4,8 @@ default-members = ["cli"]
 resolver = "2"
 
 [workspace.dependencies]
-datafusion = "45"
-sqlparser = { version = "0.53", features = ["visitor"] }
+datafusion = "52"
+sqlparser = { version = "0.59", features = ["visitor"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

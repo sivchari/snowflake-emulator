@@ -5,11 +5,12 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, StringArray};
-use arrow::datatypes::DataType;
+use datafusion::arrow::array::{Array, StringArray};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 use sha1::Sha1;
 use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
@@ -22,7 +23,7 @@ use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 ///
 /// Syntax: SHA1(string)
 /// Returns the 40-character hex string representation of the SHA-1 hash.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Sha1Func {
     signature: Signature,
 }
@@ -58,14 +59,14 @@ impl ScalarUDFImpl for Sha1Func {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 1 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 1 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "SHA1 requires exactly 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         match input {
             ColumnarValue::Scalar(scalar) => {
@@ -135,7 +136,7 @@ pub fn sha1_hex() -> ScalarUDF {
 /// Syntax: SHA2(string, bit_length)
 /// Returns the hex string representation of the SHA-2 hash.
 /// bit_length can be 224, 256, 384, or 512 (default: 256).
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Sha2Func {
     signature: Signature,
 }
@@ -171,18 +172,18 @@ impl ScalarUDFImpl for Sha2Func {
         Ok(DataType::Utf8)
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], _num_rows: usize) -> Result<ColumnarValue> {
-        if args.is_empty() {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "SHA2 requires at least 1 argument".to_string(),
             ));
         }
 
-        let input = &args[0];
+        let input = &args.args[0];
 
         // Get bit length (default 256)
-        let bit_length = if args.len() > 1 {
-            match &args[1] {
+        let bit_length = if args.args.len() > 1 {
+            match &args.args[1] {
                 ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) => *v as i32,
                 ColumnarValue::Scalar(ScalarValue::Int32(Some(v))) => *v,
                 _ => 256,
@@ -277,13 +278,14 @@ pub fn sha2() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::test_utils::invoke_udf_string;
 
     #[test]
     fn test_sha1() {
         let func = Sha1Func::new();
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("hello".to_string())));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(hash))) = result {
             // SHA1 of "hello" is aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
@@ -299,7 +301,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("hello".to_string())));
         let bit_length = ColumnarValue::Scalar(ScalarValue::Int64(Some(256)));
-        let result = func.invoke_batch(&[input, bit_length], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input, bit_length]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(hash))) = result {
             // SHA256 of "hello" is 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
@@ -318,7 +320,7 @@ mod tests {
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("hello".to_string())));
         let bit_length = ColumnarValue::Scalar(ScalarValue::Int64(Some(512)));
-        let result = func.invoke_batch(&[input, bit_length], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input, bit_length]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(hash))) = result {
             // SHA512 of "hello" starts with 9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043
@@ -336,7 +338,7 @@ mod tests {
         let func = Sha1Func::new();
 
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(None));
-        let result = func.invoke_batch(&[input], 1).unwrap();
+        let result = invoke_udf_string(&func, &[input]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(None)) = result {
             // Expected NULL

@@ -5,12 +5,13 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, BooleanArray, StringBuilder};
-use arrow::compute::kernels::zip::zip;
-use arrow::datatypes::DataType;
+use datafusion::arrow::array::{Array, ArrayRef, BooleanArray, StringBuilder};
+use datafusion::arrow::compute::kernels::zip::zip;
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::Result;
 use datafusion::logical_expr::{
-    ColumnarValue, Documentation, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility,
 };
 
 // ============================================================================
@@ -21,7 +22,7 @@ use datafusion::logical_expr::{
 ///
 /// Syntax: IFF(condition, true_value, false_value)
 /// Returns true_value if condition is true, otherwise false_value.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct IffFunc {
     signature: Signature,
 }
@@ -58,21 +59,21 @@ impl ScalarUDFImpl for IffFunc {
         Ok(arg_types.get(1).cloned().unwrap_or(DataType::Null))
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "IFF requires exactly 3 arguments".to_string(),
             ));
         }
 
-        let condition = &args[0];
-        let true_value = &args[1];
-        let false_value = &args[2];
+        let condition = &args.args[0];
+        let true_value = &args.args[1];
+        let false_value = &args.args[2];
 
         // Convert all to arrays
-        let condition_array = condition.to_array(num_rows)?;
-        let true_array = true_value.to_array(num_rows)?;
-        let false_array = false_value.to_array(num_rows)?;
+        let condition_array = condition.to_array(args.number_rows)?;
+        let true_array = true_value.to_array(args.number_rows)?;
+        let false_array = false_value.to_array(args.number_rows)?;
 
         // Get boolean condition
         let condition_bool = condition_array
@@ -108,7 +109,7 @@ pub fn iff() -> ScalarUDF {
 ///
 /// Syntax: NVL(expr1, expr2)
 /// Equivalent to COALESCE(expr1, expr2) or IFNULL(expr1, expr2)
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct NvlFunc {
     signature: Signature,
 }
@@ -144,15 +145,15 @@ impl ScalarUDFImpl for NvlFunc {
         Ok(arg_types.first().cloned().unwrap_or(DataType::Null))
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 2 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 2 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "NVL requires exactly 2 arguments".to_string(),
             ));
         }
 
-        let expr1 = &args[0];
-        let expr2 = &args[1];
+        let expr1 = &args.args[0];
+        let expr2 = &args.args[1];
 
         // Handle scalar case for efficiency
         if let (ColumnarValue::Scalar(s1), ColumnarValue::Scalar(s2)) = (expr1, expr2) {
@@ -163,8 +164,8 @@ impl ScalarUDFImpl for NvlFunc {
             }));
         }
 
-        let arr1 = expr1.to_array(num_rows)?;
-        let arr2 = expr2.to_array(num_rows)?;
+        let arr1 = expr1.to_array(args.number_rows)?;
+        let arr2 = expr2.to_array(args.number_rows)?;
 
         // Build null mask: where arr1 is null, use arr2
         let nulls = arr1.nulls();
@@ -204,7 +205,7 @@ pub fn nvl() -> ScalarUDF {
 /// Note: This is the opposite of typical NULL handling!
 /// - If expr1 is NOT NULL -> return expr2
 /// - If expr1 is NULL -> return expr3
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Nvl2Func {
     signature: Signature,
 }
@@ -241,16 +242,16 @@ impl ScalarUDFImpl for Nvl2Func {
         Ok(arg_types.get(1).cloned().unwrap_or(DataType::Null))
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() != 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() != 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "NVL2 requires exactly 3 arguments".to_string(),
             ));
         }
 
-        let expr1 = &args[0];
-        let expr2 = &args[1]; // returned when expr1 is NOT NULL
-        let expr3 = &args[2]; // returned when expr1 is NULL
+        let expr1 = &args.args[0];
+        let expr2 = &args.args[1]; // returned when expr1 is NOT NULL
+        let expr3 = &args.args[2]; // returned when expr1 is NULL
 
         // Handle scalar case
         if let ColumnarValue::Scalar(s1) = expr1 {
@@ -263,9 +264,9 @@ impl ScalarUDFImpl for Nvl2Func {
             }
         }
 
-        let arr1 = expr1.to_array(num_rows)?;
-        let arr2 = expr2.to_array(num_rows)?;
-        let arr3 = expr3.to_array(num_rows)?;
+        let arr1 = expr1.to_array(args.number_rows)?;
+        let arr2 = expr2.to_array(args.number_rows)?;
+        let arr3 = expr3.to_array(args.number_rows)?;
 
         // Build condition: is NOT null
         let nulls = arr1.nulls();
@@ -315,7 +316,7 @@ pub fn nvl2() -> ScalarUDF {
 /// - Minimum 3 arguments: DECODE(expr, search1, result1)
 /// - Optional default value at the end (when odd number of arguments after expr)
 /// - Returns NULL if no match and no default provided
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct DecodeFunc {
     signature: Signature,
 }
@@ -397,15 +398,15 @@ impl ScalarUDFImpl for DecodeFunc {
         Ok(arg_types.get(2).cloned().unwrap_or(DataType::Utf8))
     }
 
-    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> Result<ColumnarValue> {
-        if args.len() < 3 {
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        if args.args.len() < 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "DECODE requires at least 3 arguments: DECODE(expr, search, result, ...)"
                     .to_string(),
             ));
         }
 
-        let expr = &args[0];
+        let expr = &args.args[0];
 
         // Calculate pairs and default
         // After expr, we have search/result pairs and optionally a default
@@ -413,17 +414,17 @@ impl ScalarUDFImpl for DecodeFunc {
         // args[3], args[4] = search2, result2
         // ...
         // If (args.len() - 1) is odd, the last argument is the default
-        let remaining = args.len() - 1;
+        let remaining = args.args.len() - 1;
         let has_default = remaining % 2 == 1;
         let num_pairs = remaining / 2;
 
         // Convert expr to array for row-wise processing
-        let expr_array = expr.to_array(num_rows)?;
+        let expr_array = expr.to_array(args.number_rows)?;
 
         // Build result array
         let mut result_builder = StringBuilder::new();
 
-        for row_idx in 0..num_rows {
+        for row_idx in 0..args.number_rows {
             // Get expr value for this row
             let expr_scalar =
                 datafusion::common::ScalarValue::try_from_array(&expr_array, row_idx)?;
@@ -436,12 +437,12 @@ impl ScalarUDFImpl for DecodeFunc {
                 let search_idx = 1 + pair_idx * 2;
                 let result_idx = 2 + pair_idx * 2;
 
-                let search_array = args[search_idx].to_array(num_rows)?;
+                let search_array = args.args[search_idx].to_array(args.number_rows)?;
                 let search_scalar =
                     datafusion::common::ScalarValue::try_from_array(&search_array, row_idx)?;
 
                 if Self::values_equal(&expr_scalar, &search_scalar) {
-                    let result_array = args[result_idx].to_array(num_rows)?;
+                    let result_array = args.args[result_idx].to_array(args.number_rows)?;
                     result_value = Some(datafusion::common::ScalarValue::try_from_array(
                         &result_array,
                         row_idx,
@@ -453,8 +454,8 @@ impl ScalarUDFImpl for DecodeFunc {
 
             // If no match, use default or NULL
             if !matched && has_default {
-                let default_idx = args.len() - 1;
-                let default_array = args[default_idx].to_array(num_rows)?;
+                let default_idx = args.args.len() - 1;
+                let default_array = args.args[default_idx].to_array(args.number_rows)?;
                 result_value = Some(datafusion::common::ScalarValue::try_from_array(
                     &default_array,
                     row_idx,
@@ -492,7 +493,9 @@ pub fn decode() -> ScalarUDF {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use crate::functions::test_utils::{invoke_udf, invoke_udf_int64, invoke_udf_string};
+    use datafusion::arrow::array::StringArray;
+    use datafusion::arrow::datatypes::DataType;
     use datafusion::common::ScalarValue;
 
     #[test]
@@ -504,9 +507,7 @@ mod tests {
         let true_val = ColumnarValue::Scalar(ScalarValue::Utf8(Some("yes".to_string())));
         let false_val = ColumnarValue::Scalar(ScalarValue::Utf8(Some("no".to_string())));
 
-        let result = func
-            .invoke_batch(&[condition, true_val, false_val], 1)
-            .unwrap();
+        let result = invoke_udf_string(&func, &[condition, true_val, false_val]).unwrap();
 
         if let ColumnarValue::Array(arr) = result {
             let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
@@ -523,9 +524,7 @@ mod tests {
         let true_val = ColumnarValue::Scalar(ScalarValue::Utf8(Some("yes".to_string())));
         let false_val = ColumnarValue::Scalar(ScalarValue::Utf8(Some("no".to_string())));
 
-        let result = func
-            .invoke_batch(&[condition, true_val, false_val], 1)
-            .unwrap();
+        let result = invoke_udf_string(&func, &[condition, true_val, false_val]).unwrap();
 
         if let ColumnarValue::Array(arr) = result {
             let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
@@ -541,7 +540,7 @@ mod tests {
         let expr1 = ColumnarValue::Scalar(ScalarValue::Int64(Some(10)));
         let expr2 = ColumnarValue::Scalar(ScalarValue::Int64(Some(20)));
 
-        let result = func.invoke_batch(&[expr1, expr2], 1).unwrap();
+        let result = invoke_udf_int64(&func, &[expr1, expr2]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) = result {
             assert_eq!(v, 10);
@@ -558,7 +557,7 @@ mod tests {
         let expr1 = ColumnarValue::Scalar(ScalarValue::Int64(None));
         let expr2 = ColumnarValue::Scalar(ScalarValue::Int64(Some(20)));
 
-        let result = func.invoke_batch(&[expr1, expr2], 1).unwrap();
+        let result = invoke_udf_int64(&func, &[expr1, expr2]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Int64(Some(v))) = result {
             assert_eq!(v, 20);
@@ -576,7 +575,7 @@ mod tests {
         let expr2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("has value".to_string())));
         let expr3 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("no value".to_string())));
 
-        let result = func.invoke_batch(&[expr1, expr2, expr3], 1).unwrap();
+        let result = invoke_udf_string(&func, &[expr1, expr2, expr3]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(v))) = result {
             assert_eq!(v, "has value");
@@ -594,7 +593,7 @@ mod tests {
         let expr2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("has value".to_string())));
         let expr3 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("no value".to_string())));
 
-        let result = func.invoke_batch(&[expr1, expr2, expr3], 1).unwrap();
+        let result = invoke_udf_string(&func, &[expr1, expr2, expr3]).unwrap();
 
         if let ColumnarValue::Scalar(ScalarValue::Utf8(Some(v))) = result {
             assert_eq!(v, "no value");
@@ -615,9 +614,12 @@ mod tests {
         let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("two".to_string())));
         let default = ColumnarValue::Scalar(ScalarValue::Utf8(Some("other".to_string())));
 
-        let result = func
-            .invoke_batch(&[expr, search1, result1, search2, result2, default], 1)
-            .unwrap();
+        let result = invoke_udf(
+            &func,
+            &[expr, search1, result1, search2, result2, default],
+            DataType::Utf8,
+        )
+        .unwrap();
 
         if let ColumnarValue::Array(arr) = result {
             let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
@@ -639,9 +641,12 @@ mod tests {
         let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("two".to_string())));
         let default = ColumnarValue::Scalar(ScalarValue::Utf8(Some("other".to_string())));
 
-        let result = func
-            .invoke_batch(&[expr, search1, result1, search2, result2, default], 1)
-            .unwrap();
+        let result = invoke_udf(
+            &func,
+            &[expr, search1, result1, search2, result2, default],
+            DataType::Utf8,
+        )
+        .unwrap();
 
         if let ColumnarValue::Array(arr) = result {
             let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
@@ -663,9 +668,12 @@ mod tests {
         let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("two".to_string())));
         let default = ColumnarValue::Scalar(ScalarValue::Utf8(Some("other".to_string())));
 
-        let result = func
-            .invoke_batch(&[expr, search1, result1, search2, result2, default], 1)
-            .unwrap();
+        let result = invoke_udf(
+            &func,
+            &[expr, search1, result1, search2, result2, default],
+            DataType::Utf8,
+        )
+        .unwrap();
 
         if let ColumnarValue::Array(arr) = result {
             let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
@@ -686,9 +694,12 @@ mod tests {
         let search2 = ColumnarValue::Scalar(ScalarValue::Int64(Some(2)));
         let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("two".to_string())));
 
-        let result = func
-            .invoke_batch(&[expr, search1, result1, search2, result2], 1)
-            .unwrap();
+        let result = invoke_udf(
+            &func,
+            &[expr, search1, result1, search2, result2],
+            DataType::Utf8,
+        )
+        .unwrap();
 
         if let ColumnarValue::Array(arr) = result {
             let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
@@ -710,9 +721,12 @@ mod tests {
         let result2 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("Beta".to_string())));
         let default = ColumnarValue::Scalar(ScalarValue::Utf8(Some("Other".to_string())));
 
-        let result = func
-            .invoke_batch(&[expr, search1, result1, search2, result2, default], 1)
-            .unwrap();
+        let result = invoke_udf(
+            &func,
+            &[expr, search1, result1, search2, result2, default],
+            DataType::Utf8,
+        )
+        .unwrap();
 
         if let ColumnarValue::Array(arr) = result {
             let str_arr = arr.as_any().downcast_ref::<StringArray>().unwrap();

@@ -77,7 +77,7 @@ pub async fn execute_statement(
         // Return accepted response with statement handle
         let response = AsyncAcceptedResponse {
             statement_handle: statement_handle.clone(),
-            statement_status_url: format!("/api/v2/statements/{}", statement_handle),
+            statement_status_url: format!("/api/v2/statements/{statement_handle}"),
             message: "Statement execution is in progress.".to_string(),
         };
 
