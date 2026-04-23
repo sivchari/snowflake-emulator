@@ -227,7 +227,13 @@ pub async fn health_check() -> impl IntoResponse {
 /// Login request handler (dummy authentication)
 ///
 /// POST /session/v1/login-request
-pub async fn login_request(Json(request): Json<serde_json::Value>) -> impl IntoResponse {
+///
+/// Accepts raw body to handle both JSON and other content types from
+/// different Snowflake connector implementations (Go, Python, etc.).
+pub async fn login_request(body: axum::body::Bytes) -> impl IntoResponse {
+    // Try to parse as JSON; if it fails, use defaults
+    let request: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+
     let login_name = request
         .pointer("/data/LOGIN_NAME")
         .or_else(|| request.pointer("/data/login_name"))
