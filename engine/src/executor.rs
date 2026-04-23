@@ -283,6 +283,23 @@ impl Executor {
             return self.handle_alter_table(sql, statement_handle).await;
         }
 
+        // Handle CREATE TABLE ... AS SELECT (CTAS) statement
+        if (sql_upper.starts_with("CREATE TABLE ")
+            || sql_upper.starts_with("CREATE OR REPLACE TABLE "))
+            && sql_upper.contains(" AS ")
+            && !sql_upper.contains(" AS SELECT 1")
+        {
+            // Check if this is actually a CTAS (has SELECT after AS)
+            let as_pos = sql_upper.find(" AS ").unwrap();
+            let after_as = sql_upper[as_pos + 4..].trim();
+            if after_as.starts_with("SELECT ")
+                || after_as.starts_with('(')
+                || after_as.starts_with("WITH ")
+            {
+                return self.handle_ctas(sql, statement_handle).await;
+            }
+        }
+
         // Handle CREATE VIEW statement
         if sql_upper.starts_with("CREATE VIEW ") || sql_upper.starts_with("CREATE OR REPLACE VIEW ")
         {
@@ -1747,6 +1764,103 @@ impl Executor {
 
         let data = vec![vec![Some(format!(
             "View {view_name} dropped successfully."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle CREATE TABLE ... AS SELECT (CTAS) statement
+    ///
+    /// Syntax:
+    /// - CREATE TABLE table_name AS SELECT ...
+    /// - CREATE OR REPLACE TABLE table_name AS SELECT ...
+    /// - CREATE TABLE IF NOT EXISTS table_name AS SELECT ...
+    async fn handle_ctas(&self, sql: &str, statement_handle: String) -> Result<StatementResponse> {
+        let ctas_pattern = regex::Regex::new(
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s+AS\s+(.+)",
+        )
+        .unwrap();
+
+        let captures = ctas_pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError(
+                "Invalid CREATE TABLE ... AS SELECT syntax".to_string(),
+            )
+        })?;
+
+        let table_name = captures.get(1).unwrap().as_str();
+        let select_sql = captures.get(2).unwrap().as_str().trim();
+
+        // Remove surrounding parentheses if present
+        let select_sql = if select_sql.starts_with('(') && select_sql.ends_with(')') {
+            &select_sql[1..select_sql.len() - 1]
+        } else {
+            select_sql
+        };
+
+        let sql_upper = sql.trim().to_uppercase();
+        let or_replace = sql_upper.contains("OR REPLACE");
+        let if_not_exists = sql_upper.contains("IF NOT EXISTS");
+
+        // Check if table already exists
+        let table_exists = self.ctx.table(table_name).await.is_ok();
+
+        if table_exists {
+            if if_not_exists {
+                let columns = vec![ColumnMetaData {
+                    name: "status".to_string(),
+                    r#type: "TEXT".to_string(),
+                    nullable: false,
+                    precision: None,
+                    scale: None,
+                    length: None,
+                }];
+                let data = vec![vec![Some(format!(
+                    "Table {table_name} already exists, statement succeeded."
+                ))]];
+                return Ok(StatementResponse::success(data, columns, statement_handle));
+            }
+            if or_replace {
+                self.ctx.deregister_table(table_name)?;
+            } else {
+                return Err(crate::error::Error::ExecutionError(format!(
+                    "Table {table_name} already exists"
+                )));
+            }
+        }
+
+        // Rewrite and expand views in the SELECT statement
+        let rewritten_select = sql_rewriter::rewrite(select_sql);
+        let rewritten_select = self.expand_views(&rewritten_select);
+
+        // Execute the SELECT query
+        let df = self.ctx.sql(&rewritten_select).await?;
+        let batches = df.collect().await?;
+
+        // Create MemTable from the result batches
+        let schema = if !batches.is_empty() {
+            batches[0].schema()
+        } else {
+            return Err(crate::error::Error::ExecutionError(
+                "CTAS query returned no schema".to_string(),
+            ));
+        };
+
+        let mem_table = MemTable::try_new(schema, vec![batches])?;
+        self.ctx
+            .register_table(table_name, Arc::new(mem_table))?;
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let table_name_upper = table_name.to_uppercase();
+        let data = vec![vec![Some(format!(
+            "Table {table_name_upper} successfully created."
         ))]];
 
         Ok(StatementResponse::success(data, columns, statement_handle))
@@ -5745,5 +5859,188 @@ mod tests {
 
         // Check INFORMATION_SCHEMA
         assert_eq!(data[1][1].as_ref().unwrap(), "INFORMATION_SCHEMA");
+    }
+
+    #[tokio::test]
+    async fn test_ctas_basic() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE src (id INT, name VARCHAR)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO src VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")
+            .await
+            .unwrap();
+
+        let result = executor
+            .execute("CREATE TABLE dst AS SELECT * FROM src")
+            .await;
+        assert!(result.is_ok(), "CTAS failed: {:?}", result.err());
+
+        let response = executor
+            .execute("SELECT id, name FROM dst ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 3);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("1".to_string()));
+        assert_eq!(data[0][1], Some("Alice".to_string()));
+        assert_eq!(data[2][0], Some("3".to_string()));
+        assert_eq!(data[2][1], Some("Charlie".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_ctas_with_where() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE src2 (id INT, value INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO src2 VALUES (1, 10), (2, 20), (3, 30)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("CREATE TABLE filtered AS SELECT id, value FROM src2 WHERE value > 15")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT id, value FROM filtered ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("2".to_string()));
+        assert_eq!(data[1][0], Some("3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_ctas_or_replace() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE src3 (id INT, name VARCHAR)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO src3 VALUES (1, 'Alice')")
+            .await
+            .unwrap();
+
+        executor
+            .execute("CREATE TABLE dst3 AS SELECT * FROM src3")
+            .await
+            .unwrap();
+
+        // Insert more data into source
+        executor
+            .execute("INSERT INTO src3 VALUES (2, 'Bob')")
+            .await
+            .unwrap();
+
+        // Replace the destination table
+        let result = executor
+            .execute("CREATE OR REPLACE TABLE dst3 AS SELECT * FROM src3")
+            .await;
+        assert!(result.is_ok(), "CTAS OR REPLACE failed: {:?}", result.err());
+
+        let response = executor
+            .execute("SELECT id, name FROM dst3 ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+    }
+
+    #[tokio::test]
+    async fn test_ctas_if_not_exists() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE src4 (id INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO src4 VALUES (1), (2)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("CREATE TABLE dst4 AS SELECT * FROM src4")
+            .await
+            .unwrap();
+
+        // IF NOT EXISTS should succeed without modifying the table
+        let result = executor
+            .execute("CREATE TABLE IF NOT EXISTS dst4 AS SELECT * FROM src4")
+            .await;
+        assert!(result.is_ok());
+
+        // Table should still have original data
+        let response = executor
+            .execute("SELECT * FROM dst4 ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+    }
+
+    #[tokio::test]
+    async fn test_ctas_with_aggregation() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE sales (category VARCHAR, amount INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO sales VALUES ('A', 10), ('B', 20), ('A', 30), ('B', 40)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("CREATE TABLE summary AS SELECT category, SUM(amount) as total FROM sales GROUP BY category")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT category, total FROM summary ORDER BY category")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("A".to_string()));
+        assert_eq!(data[0][1], Some("40".to_string()));
+        assert_eq!(data[1][0], Some("B".to_string()));
+        assert_eq!(data[1][1], Some("60".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_ctas_with_parenthesized_select() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE src5 (id INT, name VARCHAR)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO src5 VALUES (1, 'Alice'), (2, 'Bob')")
+            .await
+            .unwrap();
+
+        // dbt typically wraps SELECT in parentheses
+        executor
+            .execute("CREATE TABLE dst5 AS (SELECT * FROM src5)")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT * FROM dst5 ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
     }
 }
