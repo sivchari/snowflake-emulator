@@ -1,0 +1,11 @@
+name: snowflake_emulator_test
+version: "1.0.0"
+config-version: 2
+
+profile: snowflake_emulator
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+clean-targets:
+  - target
+  - dbt_packages
