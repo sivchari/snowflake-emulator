@@ -356,8 +356,19 @@ fn default_session_parameters() -> Vec<SessionParameter> {
 /// POST /queries/v1/query-request
 pub async fn v1_query_request(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<V1QueryRequest>,
+    body: axum::body::Bytes,
 ) -> impl IntoResponse {
+    let request: V1QueryRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Failed to parse v1 query request: {}", e);
+            tracing::debug!("Request body: {}", String::from_utf8_lossy(&body));
+            let error_response =
+                V1QueryResponse::error("000900", &format!("Invalid request: {e}"), "42000");
+            return (StatusCode::OK, Json(error_response)).into_response();
+        }
+    };
+
     tracing::info!("v1 Query request: {}", request.sql_text);
 
     let executor = state.session_manager.executor();
@@ -374,6 +385,18 @@ pub async fn v1_query_request(
             (StatusCode::OK, Json(error_response)).into_response()
         }
     }
+}
+
+/// Abort request handler (no-op for emulator)
+///
+/// POST /queries/v1/abort-request
+pub async fn v1_abort_request() -> impl IntoResponse {
+    let response = serde_json::json!({
+        "data": null,
+        "success": true,
+        "message": null
+    });
+    (StatusCode::OK, Json(response))
 }
 
 /// Login response

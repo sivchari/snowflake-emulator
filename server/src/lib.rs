@@ -36,6 +36,10 @@ pub fn build_router() -> Router {
             "/queries/v1/query-request",
             post(handlers::v1_query_request),
         )
+        .route(
+            "/queries/v1/abort-request",
+            post(handlers::v1_abort_request),
+        )
         // Endpoints used by Python connector
         .route("/session/token-request", post(handlers::token_request))
         .route("/session", axum::routing::delete(handlers::session_delete))
