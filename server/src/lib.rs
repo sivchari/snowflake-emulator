@@ -36,6 +36,11 @@ pub fn build_router() -> Router {
             "/queries/v1/query-request",
             post(handlers::v1_query_request),
         )
+        // Endpoints used by Python connector
+        .route("/session/token-request", post(handlers::token_request))
+        .route("/session", axum::routing::delete(handlers::session_delete))
+        .route("/telemetry/send", post(handlers::telemetry_noop))
+        .route("/session/heartbeat", post(handlers::session_heartbeat))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state)

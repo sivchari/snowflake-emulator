@@ -227,29 +227,122 @@ pub async fn health_check() -> impl IntoResponse {
 /// Login request handler (dummy authentication)
 ///
 /// POST /session/v1/login-request
-pub async fn login_request(Json(request): Json<LoginRequest>) -> impl IntoResponse {
-    tracing::info!("Login request for account: {:?}", request.data.account_name);
+pub async fn login_request(Json(request): Json<serde_json::Value>) -> impl IntoResponse {
+    let login_name = request
+        .pointer("/data/LOGIN_NAME")
+        .or_else(|| request.pointer("/data/login_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("EMULATOR_USER");
 
-    // Emulator skips authentication and returns dummy response
+    let account_name = request
+        .pointer("/data/ACCOUNT_NAME")
+        .or_else(|| request.pointer("/data/account_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("test_account");
+
+    tracing::info!("Login request for account: {}", account_name);
+
+    // Session parameters that Python and Go connectors expect
+    let parameters = default_session_parameters();
+
     let response = LoginResponse {
         data: LoginResponseData {
             token: Uuid::new_v4().to_string(),
             master_token: Uuid::new_v4().to_string(),
             valid_in_seconds: 3600,
             master_valid_in_seconds: 14400,
-            display_user_name: request
-                .data
-                .login_name
-                .unwrap_or_else(|| "EMULATOR_USER".to_string()),
+            display_user_name: login_name.to_string(),
             server_version: "8.0.0".to_string(),
             first_login: false,
-            parameters: vec![],
+            parameters,
         },
         success: true,
         message: None,
     };
 
     (StatusCode::OK, Json(response))
+}
+
+/// Return default session parameters expected by Snowflake connectors
+fn default_session_parameters() -> Vec<SessionParameter> {
+    vec![
+        SessionParameter {
+            name: "AUTOCOMMIT".to_string(),
+            value: serde_json::Value::Bool(true),
+        },
+        SessionParameter {
+            name: "CLIENT_SESSION_KEEP_ALIVE".to_string(),
+            value: serde_json::Value::Bool(false),
+        },
+        SessionParameter {
+            name: "CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY".to_string(),
+            value: serde_json::Value::Number(3600.into()),
+        },
+        SessionParameter {
+            name: "CLIENT_PREFETCH_THREADS".to_string(),
+            value: serde_json::Value::Number(4.into()),
+        },
+        SessionParameter {
+            name: "TIMEZONE".to_string(),
+            value: serde_json::Value::String("America/Los_Angeles".to_string()),
+        },
+        SessionParameter {
+            name: "TIMESTAMP_OUTPUT_FORMAT".to_string(),
+            value: serde_json::Value::String("YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM".to_string()),
+        },
+        SessionParameter {
+            name: "TIMESTAMP_NTZ_OUTPUT_FORMAT".to_string(),
+            value: serde_json::Value::String("YYYY-MM-DD HH24:MI:SS.FF3".to_string()),
+        },
+        SessionParameter {
+            name: "TIMESTAMP_LTZ_OUTPUT_FORMAT".to_string(),
+            value: serde_json::Value::String(String::new()),
+        },
+        SessionParameter {
+            name: "TIMESTAMP_TZ_OUTPUT_FORMAT".to_string(),
+            value: serde_json::Value::String(String::new()),
+        },
+        SessionParameter {
+            name: "DATE_OUTPUT_FORMAT".to_string(),
+            value: serde_json::Value::String("YYYY-MM-DD".to_string()),
+        },
+        SessionParameter {
+            name: "TIME_OUTPUT_FORMAT".to_string(),
+            value: serde_json::Value::String("HH24:MI:SS".to_string()),
+        },
+        SessionParameter {
+            name: "BINARY_OUTPUT_FORMAT".to_string(),
+            value: serde_json::Value::String("HEX".to_string()),
+        },
+        SessionParameter {
+            name: "CLIENT_TIMESTAMP_TYPE_MAPPING".to_string(),
+            value: serde_json::Value::String("TIMESTAMP_LTZ".to_string()),
+        },
+        SessionParameter {
+            name: "ENABLE_STAGE_S3_PRIVATELINK_FOR_US_EAST_1".to_string(),
+            value: serde_json::Value::Bool(false),
+        },
+        SessionParameter {
+            name: "CLIENT_RESULT_COLUMN_CASE_INSENSITIVE".to_string(),
+            value: serde_json::Value::Bool(false),
+        },
+        SessionParameter {
+            name: "SERVICE_NAME".to_string(),
+            value: serde_json::Value::String(String::new()),
+        },
+        SessionParameter {
+            name: "CLIENT_TELEMETRY_ENABLED".to_string(),
+            value: serde_json::Value::Bool(false),
+        },
+        SessionParameter {
+            name: "CLIENT_CONSENT_CACHE_ID_TOKEN".to_string(),
+            value: serde_json::Value::Bool(false),
+        },
+        SessionParameter {
+            name: "CLIENT_RESULT_CHUNK_SIZE".to_string(),
+            value: serde_json::Value::Number(160.into()),
+        },
+    ]
 }
 
 /// v1 query execution handler (for gosnowflake driver)
@@ -277,23 +370,6 @@ pub async fn v1_query_request(
     }
 }
 
-/// Login request
-#[derive(Debug, Deserialize)]
-pub struct LoginRequest {
-    pub data: LoginRequestData,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-#[allow(dead_code)]
-pub struct LoginRequestData {
-    pub account_name: Option<String>,
-    pub login_name: Option<String>,
-    pub password: Option<String>,
-    pub client_app_id: Option<String>,
-    pub client_app_version: Option<String>,
-}
-
 /// Login response
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
@@ -319,5 +395,52 @@ pub struct LoginResponseData {
 #[derive(Debug, Serialize)]
 pub struct SessionParameter {
     pub name: String,
-    pub value: String,
+    pub value: serde_json::Value,
+}
+
+/// Token renewal handler (no-op for emulator)
+///
+/// POST /session/token-request
+pub async fn token_request() -> impl IntoResponse {
+    let response = serde_json::json!({
+        "data": {
+            "sessionToken": Uuid::new_v4().to_string(),
+            "validInSeconds": 3600
+        },
+        "success": true,
+        "message": null
+    });
+    (StatusCode::OK, Json(response))
+}
+
+/// Session delete handler (no-op for emulator)
+///
+/// DELETE /session
+pub async fn session_delete() -> impl IntoResponse {
+    let response = serde_json::json!({
+        "success": true,
+        "message": null
+    });
+    (StatusCode::OK, Json(response))
+}
+
+/// Telemetry handler (no-op, accepts and discards)
+///
+/// POST /telemetry/send
+pub async fn telemetry_noop() -> impl IntoResponse {
+    let response = serde_json::json!({
+        "success": true
+    });
+    (StatusCode::OK, Json(response))
+}
+
+/// Session heartbeat handler (no-op for emulator)
+///
+/// POST /session/heartbeat
+pub async fn session_heartbeat() -> impl IntoResponse {
+    let response = serde_json::json!({
+        "success": true,
+        "message": null
+    });
+    (StatusCode::OK, Json(response))
 }
