@@ -518,6 +518,18 @@ fn array_value_to_json(array: &ArrayRef, index: usize) -> serde_json::Value {
                 serde_json::Value::String(s.to_string())
             }
         }
+        DataType::Utf8View => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<datafusion::arrow::array::StringViewArray>()
+                .unwrap();
+            let s = arr.value(index);
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(s) {
+                json_val
+            } else {
+                serde_json::Value::String(s.to_string())
+            }
+        }
         _ => serde_json::Value::String(format!("<unsupported: {:?}>", array.data_type())),
     }
 }
@@ -576,6 +588,13 @@ fn array_value_to_string(array: &ArrayRef, index: usize) -> String {
         }
         DataType::LargeUtf8 => {
             let arr = array.as_string::<i64>();
+            arr.value(index).to_string()
+        }
+        DataType::Utf8View => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<datafusion::arrow::array::StringViewArray>()
+                .unwrap();
             arr.value(index).to_string()
         }
         _ => format!("<unsupported: {:?}>", array.data_type()),
