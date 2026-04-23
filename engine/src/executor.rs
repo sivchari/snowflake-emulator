@@ -524,19 +524,30 @@ impl Executor {
 
     /// Handle SHOW SCHEMAS command
     async fn handle_show_schemas(&self, statement_handle: String) -> Result<StatementResponse> {
-        // DataFusion uses a flat namespace, return "public" as default schema
-        let columns = vec![ColumnMetaData {
-            name: "SCHEMA_NAME".to_string(),
-            r#type: "TEXT".to_string(),
-            nullable: false,
-            precision: None,
-            scale: None,
-            length: None,
-        }];
+        // Snowflake SHOW SCHEMAS returns columns: created_on, name, is_default, is_current, ...
+        // dbt uses the "name" column
+        let columns = vec![
+            ColumnMetaData {
+                name: "created_on".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "name".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+        ];
 
         let data: Vec<Vec<Option<String>>> = vec![
-            vec![Some("public".to_string())],
-            vec![Some("information_schema".to_string())],
+            vec![Some(String::new()), Some("PUBLIC".to_string())],
+            vec![Some(String::new()), Some("INFORMATION_SCHEMA".to_string())],
         ];
 
         Ok(StatementResponse::success(data, columns, statement_handle))
@@ -5076,8 +5087,9 @@ mod tests {
 
         assert!(response.result_set_meta_data.num_rows >= 1);
         let data = response.data.unwrap();
-        let schema_names: Vec<String> = data.iter().map(|row| row[0].clone().unwrap()).collect();
-        assert!(schema_names.contains(&"public".to_string()));
+        // name is in column index 1 (after created_on)
+        let schema_names: Vec<String> = data.iter().map(|row| row[1].clone().unwrap()).collect();
+        assert!(schema_names.contains(&"PUBLIC".to_string()));
     }
 
     #[tokio::test]
