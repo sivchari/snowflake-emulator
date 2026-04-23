@@ -38,9 +38,45 @@ jobs:
 
       - name: Start server
         run: |
-          ./target/release/server &
+          RUST_LOG=debug ./target/release/server > /tmp/server.log 2>&1 &
           sleep 3
+          echo "Server started, checking health..."
+          curl -s http://localhost:8080/health || echo "Health check failed"
+
+      - name: Test connection with Python
+        run: |
+          python3 -c "
+          import snowflake.connector
+          try:
+              conn = snowflake.connector.connect(
+                  account='localhost',
+                  user='test_user',
+                  password='test_password',
+                  database='test_db',
+                  schema='public',
+                  warehouse='test_wh',
+                  host='localhost',
+                  port=8080,
+                  protocol='http',
+                  insecure_mode=True,
+              )
+              print('CONNECTION SUCCESS')
+              cur = conn.cursor()
+              cur.execute('SELECT 1')
+              print('QUERY RESULT:', cur.fetchone())
+              conn.close()
+          except Exception as e:
+              print(f'CONNECTION FAILED: {e}')
+          " || true
+
+      - name: Show server logs
+        if: always()
+        run: cat /tmp/server.log || true
 
       - name: Run dbt integration tests
         working-directory: integration/dbt
         run: bash run_test.sh
+
+      - name: Show server logs after dbt
+        if: always()
+        run: cat /tmp/server.log || true
