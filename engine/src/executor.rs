@@ -1846,8 +1846,7 @@ impl Executor {
         };
 
         let mem_table = MemTable::try_new(schema, vec![batches])?;
-        self.ctx
-            .register_table(table_name, Arc::new(mem_table))?;
+        self.ctx.register_table(table_name, Arc::new(mem_table))?;
 
         let columns = vec![ColumnMetaData {
             name: "status".to_string(),
