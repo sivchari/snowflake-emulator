@@ -3022,7 +3022,7 @@ impl Executor {
             DataType::Float32 | DataType::Float64 => ("REAL".to_string(), None, None, None),
 
             // String types
-            DataType::Utf8 | DataType::LargeUtf8 => {
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
                 ("TEXT".to_string(), None, None, Some(16777216))
             }
 
