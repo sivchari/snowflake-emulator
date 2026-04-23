@@ -283,6 +283,25 @@ impl Executor {
             return self.handle_alter_table(sql, statement_handle).await;
         }
 
+        // Handle CREATE DYNAMIC TABLE statement
+        if sql_upper.starts_with("CREATE DYNAMIC TABLE ")
+            || sql_upper.starts_with("CREATE OR REPLACE DYNAMIC TABLE ")
+        {
+            return self
+                .handle_create_dynamic_table(sql, statement_handle)
+                .await;
+        }
+
+        // Handle DROP DYNAMIC TABLE statement
+        if sql_upper.starts_with("DROP DYNAMIC TABLE ") {
+            return self.handle_drop_dynamic_table(sql, statement_handle);
+        }
+
+        // Handle ALTER DYNAMIC TABLE statement
+        if sql_upper.starts_with("ALTER DYNAMIC TABLE ") {
+            return self.handle_alter_dynamic_table(sql, statement_handle);
+        }
+
         // Handle CREATE TABLE ... AS SELECT (CTAS) statement
         if (sql_upper.starts_with("CREATE TABLE ")
             || sql_upper.starts_with("CREATE OR REPLACE TABLE "))
@@ -1860,6 +1879,169 @@ impl Executor {
         let table_name_upper = table_name.to_uppercase();
         let data = vec![vec![Some(format!(
             "Table {table_name_upper} successfully created."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle CREATE DYNAMIC TABLE statement
+    ///
+    /// Syntax:
+    /// - CREATE DYNAMIC TABLE table_name TARGET_LAG = '...' WAREHOUSE = ... AS SELECT ...
+    /// - CREATE OR REPLACE DYNAMIC TABLE table_name TARGET_LAG = '...' WAREHOUSE = ... AS SELECT ...
+    async fn handle_create_dynamic_table(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let pattern = regex::Regex::new(
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?DYNAMIC\s+TABLE\s+([A-Za-z_][\w.]*)\s+.*?\bAS\s+(.+)",
+        )
+        .unwrap();
+
+        let captures = pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid CREATE DYNAMIC TABLE syntax".to_string())
+        })?;
+
+        let table_name = captures.get(1).unwrap().as_str();
+        let select_sql = captures.get(2).unwrap().as_str().trim();
+
+        // Remove surrounding parentheses if present
+        let select_sql = if select_sql.starts_with('(') && select_sql.ends_with(')') {
+            &select_sql[1..select_sql.len() - 1]
+        } else {
+            select_sql
+        };
+
+        let sql_upper = sql.trim().to_uppercase();
+        let or_replace = sql_upper.contains("OR REPLACE");
+
+        // Check if table already exists
+        let table_exists = self.ctx.table(table_name).await.is_ok();
+        if table_exists {
+            if or_replace {
+                self.ctx.deregister_table(table_name)?;
+            } else {
+                return Err(crate::error::Error::ExecutionError(format!(
+                    "Dynamic table {table_name} already exists"
+                )));
+            }
+        }
+
+        // Rewrite and expand views in the SELECT statement
+        let rewritten_select = sql_rewriter::rewrite(select_sql);
+        let rewritten_select = self.expand_views(&rewritten_select);
+
+        // Execute the SELECT query to materialize the dynamic table
+        let df = self.ctx.sql(&rewritten_select).await?;
+        let batches = df.collect().await?;
+
+        let schema = if !batches.is_empty() {
+            batches[0].schema()
+        } else {
+            return Err(crate::error::Error::ExecutionError(
+                "Dynamic table query returned no schema".to_string(),
+            ));
+        };
+
+        let mem_table = MemTable::try_new(schema, vec![batches])?;
+        self.ctx.register_table(table_name, Arc::new(mem_table))?;
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let table_name_upper = table_name.to_uppercase();
+        let data = vec![vec![Some(format!(
+            "Dynamic Table {table_name_upper} successfully created."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle DROP DYNAMIC TABLE statement
+    fn handle_drop_dynamic_table(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let pattern =
+            regex::Regex::new(r"(?i)DROP\s+DYNAMIC\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][\w.]*)")
+                .unwrap();
+
+        let captures = pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid DROP DYNAMIC TABLE syntax".to_string())
+        })?;
+
+        let table_name = captures.get(1).unwrap().as_str();
+        let if_exists = sql.to_uppercase().contains("IF EXISTS");
+
+        let result = self.ctx.deregister_table(table_name);
+        match result {
+            Ok(Some(_)) => {}
+            Ok(None) if if_exists => {}
+            Ok(None) => {
+                return Err(crate::error::Error::ExecutionError(format!(
+                    "Dynamic table {table_name} does not exist"
+                )));
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let table_name_upper = table_name.to_uppercase();
+        let data = vec![vec![Some(format!(
+            "Dynamic Table {table_name_upper} successfully dropped."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle ALTER DYNAMIC TABLE statement
+    ///
+    /// Supports SUSPEND, RESUME, and SET TARGET_LAG.
+    /// Since this is an emulator, these are no-ops that return success.
+    fn handle_alter_dynamic_table(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let pattern = regex::Regex::new(
+            r"(?i)ALTER\s+DYNAMIC\s+TABLE\s+([A-Za-z_][\w.]*)\s+(SUSPEND|RESUME|SET\s+.+)",
+        )
+        .unwrap();
+
+        let captures = pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid ALTER DYNAMIC TABLE syntax".to_string())
+        })?;
+
+        let table_name = captures.get(1).unwrap().as_str();
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let table_name_upper = table_name.to_uppercase();
+        let data = vec![vec![Some(format!(
+            "Statement executed successfully on dynamic table {table_name_upper}."
         ))]];
 
         Ok(StatementResponse::success(data, columns, statement_handle))
@@ -6038,6 +6220,168 @@ mod tests {
 
         let response = executor
             .execute("SELECT * FROM dst5 ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+    }
+
+    #[tokio::test]
+    async fn test_create_dynamic_table_basic() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE dt_src (id INT, value INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO dt_src VALUES (1, 10), (2, 20), (3, 30)")
+            .await
+            .unwrap();
+
+        let result = executor
+            .execute(
+                "CREATE DYNAMIC TABLE dt_result TARGET_LAG = '1 hour' WAREHOUSE = test_wh AS SELECT id, value FROM dt_src WHERE value > 15",
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "CREATE DYNAMIC TABLE failed: {:?}",
+            result.err()
+        );
+
+        let response = executor
+            .execute("SELECT id, value FROM dt_result ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("2".to_string()));
+        assert_eq!(data[1][0], Some("3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_or_replace_dynamic_table() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE dt_src2 (id INT, value INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO dt_src2 VALUES (1, 10), (2, 20)")
+            .await
+            .unwrap();
+
+        executor
+            .execute(
+                "CREATE DYNAMIC TABLE dt_result2 TARGET_LAG = '1 hour' WAREHOUSE = test_wh AS SELECT * FROM dt_src2",
+            )
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO dt_src2 VALUES (3, 30)")
+            .await
+            .unwrap();
+
+        executor
+            .execute(
+                "CREATE OR REPLACE DYNAMIC TABLE dt_result2 TARGET_LAG = '30 minutes' WAREHOUSE = test_wh AS SELECT * FROM dt_src2",
+            )
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT * FROM dt_result2 ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 3);
+    }
+
+    #[tokio::test]
+    async fn test_drop_dynamic_table() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE dt_src3 (id INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO dt_src3 VALUES (1)")
+            .await
+            .unwrap();
+
+        executor
+            .execute(
+                "CREATE DYNAMIC TABLE dt_drop TARGET_LAG = '1 hour' WAREHOUSE = wh AS SELECT * FROM dt_src3",
+            )
+            .await
+            .unwrap();
+
+        let result = executor.execute("DROP DYNAMIC TABLE dt_drop").await;
+        assert!(result.is_ok());
+
+        // Table should no longer exist
+        let result = executor.execute("SELECT * FROM dt_drop").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_drop_dynamic_table_if_exists() {
+        let executor = Executor::new();
+
+        // Should succeed even if table doesn't exist
+        let result = executor
+            .execute("DROP DYNAMIC TABLE IF EXISTS nonexistent_dt")
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_alter_dynamic_table() {
+        let executor = Executor::new();
+
+        // ALTER DYNAMIC TABLE is a no-op in the emulator but should succeed
+        let result = executor
+            .execute("ALTER DYNAMIC TABLE some_dt SUSPEND")
+            .await;
+        assert!(result.is_ok());
+
+        let result = executor.execute("ALTER DYNAMIC TABLE some_dt RESUME").await;
+        assert!(result.is_ok());
+
+        let result = executor
+            .execute("ALTER DYNAMIC TABLE some_dt SET TARGET_LAG = '10 minutes'")
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_table_with_parenthesized_select() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE dt_src4 (id INT, name VARCHAR)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO dt_src4 VALUES (1, 'Alice'), (2, 'Bob')")
+            .await
+            .unwrap();
+
+        let result = executor
+            .execute(
+                "CREATE DYNAMIC TABLE dt_paren TARGET_LAG = '1 hour' WAREHOUSE = wh AS (SELECT * FROM dt_src4)",
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "Dynamic table with parens failed: {:?}",
+            result.err()
+        );
+
+        let response = executor
+            .execute("SELECT * FROM dt_paren ORDER BY id")
             .await
             .unwrap();
         assert_eq!(response.result_set_meta_data.num_rows, 2);
