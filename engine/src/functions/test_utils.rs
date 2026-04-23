@@ -82,6 +82,7 @@ pub fn invoke_udf_date32<T: ScalarUDFImpl>(
 }
 
 /// Helper function to invoke a scalar UDF with TimestampNanosecond return type.
+#[allow(dead_code)]
 pub fn invoke_udf_timestamp<T: ScalarUDFImpl>(
     udf: &T,
     args: &[ColumnarValue],

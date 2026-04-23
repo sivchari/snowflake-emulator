@@ -82,6 +82,20 @@ pub struct Executor {
 
     /// Stages storage: stage_name -> directory path
     stages: Arc<RwLock<HashMap<String, String>>>,
+
+    /// User-defined SQL function definitions
+    /// Key: uppercase function name, Value: (param_names, param_types, return_type, body_sql)
+    user_functions: Arc<RwLock<HashMap<String, UserFunction>>>,
+}
+
+/// User-defined SQL function definition
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct UserFunction {
+    param_names: Vec<String>,
+    param_types: Vec<DataType>,
+    return_type: DataType,
+    body_sql: String,
 }
 
 impl Executor {
@@ -220,6 +234,7 @@ impl Executor {
             in_transaction: Arc::new(RwLock::new(false)),
             transaction_snapshot: Arc::new(RwLock::new(HashMap::new())),
             stages: Arc::new(RwLock::new(HashMap::new())),
+            user_functions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -300,6 +315,18 @@ impl Executor {
         // Handle ALTER DYNAMIC TABLE statement
         if sql_upper.starts_with("ALTER DYNAMIC TABLE ") {
             return self.handle_alter_dynamic_table(sql, statement_handle);
+        }
+
+        // Handle CREATE FUNCTION statement
+        if sql_upper.starts_with("CREATE FUNCTION ")
+            || sql_upper.starts_with("CREATE OR REPLACE FUNCTION ")
+        {
+            return self.handle_create_function(sql, statement_handle);
+        }
+
+        // Handle DROP FUNCTION statement
+        if sql_upper.starts_with("DROP FUNCTION ") {
+            return self.handle_drop_function(sql, statement_handle);
         }
 
         // Handle CREATE TABLE ... AS SELECT (CTAS) statement
@@ -403,6 +430,9 @@ impl Executor {
 
         // Expand view references in the SQL
         let rewritten_sql = self.expand_views(&rewritten_sql);
+
+        // Expand user-defined SQL function calls
+        let rewritten_sql = self.expand_user_functions(&rewritten_sql);
 
         // Execute SQL with DataFusion
         let df = self.ctx.sql(&rewritten_sql).await?;
@@ -1847,9 +1877,10 @@ impl Executor {
             }
         }
 
-        // Rewrite and expand views in the SELECT statement
+        // Rewrite and expand views/functions in the SELECT statement
         let rewritten_select = sql_rewriter::rewrite(select_sql);
         let rewritten_select = self.expand_views(&rewritten_select);
+        let rewritten_select = self.expand_user_functions(&rewritten_select);
 
         // Execute the SELECT query
         let df = self.ctx.sql(&rewritten_select).await?;
@@ -1928,9 +1959,10 @@ impl Executor {
             }
         }
 
-        // Rewrite and expand views in the SELECT statement
+        // Rewrite and expand views/functions in the SELECT statement
         let rewritten_select = sql_rewriter::rewrite(select_sql);
         let rewritten_select = self.expand_views(&rewritten_select);
+        let rewritten_select = self.expand_user_functions(&rewritten_select);
 
         // Execute the SELECT query to materialize the dynamic table
         let df = self.ctx.sql(&rewritten_select).await?;
@@ -2045,6 +2077,212 @@ impl Executor {
         ))]];
 
         Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle CREATE FUNCTION statement (SQL UDF)
+    ///
+    /// Syntax:
+    /// - CREATE FUNCTION func_name(arg1 TYPE, ...) RETURNS TYPE LANGUAGE SQL AS $$ expr $$
+    /// - CREATE OR REPLACE FUNCTION func_name(arg1 TYPE, ...) RETURNS TYPE AS $$ expr $$
+    fn handle_create_function(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let pattern = regex::Regex::new(
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+([A-Za-z_][\w.]*)\s*\(([^)]*)\)\s+RETURNS\s+(\w+)\s+(?:LANGUAGE\s+SQL\s+)?AS\s+\$\$(.*?)\$\$",
+        )
+        .unwrap();
+
+        let captures = pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid CREATE FUNCTION syntax".to_string())
+        })?;
+
+        let func_name = captures.get(1).unwrap().as_str().to_uppercase();
+        let params_str = captures.get(2).unwrap().as_str().trim();
+        let return_type_str = captures.get(3).unwrap().as_str().trim();
+        let body_sql = captures.get(4).unwrap().as_str().trim().to_string();
+
+        // Parse parameters
+        let mut param_names = Vec::new();
+        let mut param_types = Vec::new();
+
+        if !params_str.is_empty() {
+            for param in params_str.split(',') {
+                let parts: Vec<&str> = param.split_whitespace().collect();
+                if parts.len() < 2 {
+                    return Err(crate::error::Error::ExecutionError(format!(
+                        "Invalid parameter declaration: {param}"
+                    )));
+                }
+                param_names.push(parts[0].to_uppercase());
+                param_types.push(self.parse_sql_type(parts[1])?);
+            }
+        }
+
+        let return_type = self.parse_sql_type(return_type_str)?;
+
+        let or_replace = sql.trim().to_uppercase().contains("OR REPLACE");
+
+        // Check if function already exists
+        {
+            let funcs = self.user_functions.read().unwrap();
+            if funcs.contains_key(&func_name) && !or_replace {
+                return Err(crate::error::Error::ExecutionError(format!(
+                    "Function {func_name} already exists"
+                )));
+            }
+        }
+
+        // Store function definition
+        {
+            let mut funcs = self.user_functions.write().unwrap();
+            funcs.insert(
+                func_name.clone(),
+                UserFunction {
+                    param_names,
+                    param_types,
+                    return_type,
+                    body_sql,
+                },
+            );
+        }
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let data = vec![vec![Some(format!(
+            "Function {func_name} successfully created."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle DROP FUNCTION statement
+    fn handle_drop_function(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        // Match DROP FUNCTION with optional IF EXISTS and optional parameter list
+        let pattern = regex::Regex::new(
+            r"(?i)DROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s*(?:\([^)]*\))?",
+        )
+        .unwrap();
+
+        let captures = pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid DROP FUNCTION syntax".to_string())
+        })?;
+
+        let func_name = captures.get(1).unwrap().as_str().to_uppercase();
+        let if_exists = sql.to_uppercase().contains("IF EXISTS");
+
+        let removed = {
+            let mut funcs = self.user_functions.write().unwrap();
+            funcs.remove(&func_name).is_some()
+        };
+
+        if !removed && !if_exists {
+            return Err(crate::error::Error::ExecutionError(format!(
+                "Function {func_name} does not exist"
+            )));
+        }
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let data = vec![vec![Some(format!(
+            "Function {func_name} successfully dropped."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Parse a Snowflake SQL type string into a DataFusion DataType
+    fn parse_sql_type(&self, type_str: &str) -> Result<DataType> {
+        match type_str.to_uppercase().as_str() {
+            "INT" | "INTEGER" | "BIGINT" => Ok(DataType::Int64),
+            "SMALLINT" | "TINYINT" => Ok(DataType::Int32),
+            "FLOAT" | "DOUBLE" | "REAL" | "FLOAT8" | "FLOAT4" => Ok(DataType::Float64),
+            "NUMBER" | "NUMERIC" | "DECIMAL" => Ok(DataType::Float64),
+            "VARCHAR" | "STRING" | "TEXT" | "CHAR" => Ok(DataType::Utf8),
+            "BOOLEAN" | "BOOL" => Ok(DataType::Boolean),
+            "DATE" => Ok(DataType::Date32),
+            "TIMESTAMP" | "DATETIME" => Ok(DataType::Timestamp(
+                datafusion::arrow::datatypes::TimeUnit::Microsecond,
+                None,
+            )),
+            "VARIANT" | "OBJECT" | "ARRAY" => Ok(DataType::Utf8),
+            other => Err(crate::error::Error::ExecutionError(format!(
+                "Unsupported type: {other}"
+            ))),
+        }
+    }
+
+    /// Expand user-defined SQL function calls in SQL
+    ///
+    /// Replaces `func_name(arg1, arg2)` with the function body,
+    /// substituting parameter references with actual arguments.
+    fn expand_user_functions(&self, sql: &str) -> String {
+        let funcs = self.user_functions.read().unwrap();
+        if funcs.is_empty() {
+            return sql.to_string();
+        }
+
+        let mut result = sql.to_string();
+
+        for (func_name, func_def) in funcs.iter() {
+            // Build regex to match function call: func_name(args...)
+            // Case-insensitive match
+            let call_pattern = regex::Regex::new(&format!(
+                r"(?i)\b{}\s*\(([^)]*)\)",
+                regex::escape(func_name)
+            ))
+            .unwrap();
+
+            while let Some(captures) = call_pattern.captures(&result) {
+                let full_match = captures.get(0).unwrap();
+                let args_str = captures.get(1).unwrap().as_str();
+
+                // Parse arguments (simple comma-split, handles basic cases)
+                let args: Vec<&str> = if args_str.trim().is_empty() {
+                    vec![]
+                } else {
+                    args_str.split(',').map(|a| a.trim()).collect()
+                };
+
+                // Substitute parameter names in body with actual arguments
+                let mut expanded = func_def.body_sql.clone();
+                for (i, param_name) in func_def.param_names.iter().enumerate() {
+                    if let Some(arg) = args.get(i) {
+                        // Replace parameter references (case-insensitive)
+                        let param_pattern =
+                            regex::Regex::new(&format!(r"(?i)\b{}\b", regex::escape(param_name)))
+                                .unwrap();
+                        expanded = param_pattern.replace_all(&expanded, *arg).to_string();
+                    }
+                }
+
+                // Replace the function call with the expanded body in parentheses
+                let before = &result[..full_match.start()];
+                let after = &result[full_match.end()..];
+                result = format!("{before}({expanded}){after}");
+            }
+        }
+
+        result
     }
 
     /// Expand view references in SQL by replacing view names with their definitions
@@ -6385,5 +6623,150 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.result_set_meta_data.num_rows, 2);
+    }
+
+    #[tokio::test]
+    async fn test_create_sql_udf_basic() {
+        let executor = Executor::new();
+
+        let result = executor
+            .execute("CREATE FUNCTION add_one(x INT) RETURNS INT LANGUAGE SQL AS $$ x + 1 $$")
+            .await;
+        assert!(result.is_ok(), "CREATE FUNCTION failed: {:?}", result.err());
+
+        let response = executor.execute("SELECT add_one(5)").await.unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("6".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_sql_udf_multi_param() {
+        let executor = Executor::new();
+
+        executor
+            .execute(
+                "CREATE FUNCTION multiply(a FLOAT, b FLOAT) RETURNS FLOAT LANGUAGE SQL AS $$ a * b $$",
+            )
+            .await
+            .unwrap();
+
+        let response = executor.execute("SELECT multiply(3.0, 4.0)").await.unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert!(data[0][0] == Some("12".to_string()) || data[0][0] == Some("12.0".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_sql_udf_with_table() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE udf_test (id INT, value INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO udf_test VALUES (1, 10), (2, 20), (3, 30)")
+            .await
+            .unwrap();
+
+        executor
+            .execute("CREATE FUNCTION double_it(x INT) RETURNS INT LANGUAGE SQL AS $$ x * 2 $$")
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT id, double_it(value) as doubled FROM udf_test ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 3);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][1], Some("20".to_string()));
+        assert_eq!(data[1][1], Some("40".to_string()));
+        assert_eq!(data[2][1], Some("60".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_or_replace_sql_udf() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE FUNCTION my_func(x INT) RETURNS INT LANGUAGE SQL AS $$ x + 1 $$")
+            .await
+            .unwrap();
+
+        // Replace with different body
+        executor
+            .execute(
+                "CREATE OR REPLACE FUNCTION my_func(x INT) RETURNS INT LANGUAGE SQL AS $$ x + 100 $$",
+            )
+            .await
+            .unwrap();
+
+        let response = executor.execute("SELECT my_func(5)").await.unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("105".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_drop_sql_udf() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE FUNCTION to_drop(x INT) RETURNS INT LANGUAGE SQL AS $$ x $$")
+            .await
+            .unwrap();
+
+        let result = executor.execute("DROP FUNCTION to_drop(INT)").await;
+        assert!(result.is_ok());
+
+        // Function should no longer work (will be passed to DataFusion as-is)
+        let result = executor.execute("SELECT to_drop(5)").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_drop_sql_udf_if_exists() {
+        let executor = Executor::new();
+
+        let result = executor
+            .execute("DROP FUNCTION IF EXISTS nonexistent_func")
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_sql_udf_string_concat() {
+        let executor = Executor::new();
+
+        executor
+            .execute(
+                "CREATE FUNCTION greet(name VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ 'Hello, ' || name $$",
+            )
+            .await
+            .unwrap();
+
+        let response = executor.execute("SELECT greet('World')").await.unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("Hello, World".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_sql_udf_without_language_clause() {
+        let executor = Executor::new();
+
+        // LANGUAGE SQL is optional for SQL UDFs
+        let result = executor
+            .execute("CREATE FUNCTION add_two(x INT) RETURNS INT AS $$ x + 2 $$")
+            .await;
+        assert!(
+            result.is_ok(),
+            "CREATE FUNCTION without LANGUAGE failed: {:?}",
+            result.err()
+        );
+
+        let response = executor.execute("SELECT add_two(3)").await.unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("5".to_string()));
     }
 }
