@@ -2109,7 +2109,7 @@ impl Executor {
 
         if !params_str.is_empty() {
             for param in params_str.split(',') {
-                let parts: Vec<&str> = param.trim().split_whitespace().collect();
+                let parts: Vec<&str> = param.split_whitespace().collect();
                 if parts.len() < 2 {
                     return Err(crate::error::Error::ExecutionError(format!(
                         "Invalid parameter declaration: {param}"
