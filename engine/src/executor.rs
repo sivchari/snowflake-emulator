@@ -317,6 +317,20 @@ impl Executor {
             return self.handle_alter_dynamic_table(sql, statement_handle);
         }
 
+        // Handle CREATE ICEBERG TABLE statement
+        if sql_upper.starts_with("CREATE ICEBERG TABLE ")
+            || sql_upper.starts_with("CREATE OR REPLACE ICEBERG TABLE ")
+        {
+            return self
+                .handle_create_iceberg_table(sql, statement_handle)
+                .await;
+        }
+
+        // Handle DROP ICEBERG TABLE statement
+        if sql_upper.starts_with("DROP ICEBERG TABLE ") {
+            return self.handle_drop_iceberg_table(sql, statement_handle);
+        }
+
         // Handle CREATE FUNCTION statement
         if sql_upper.starts_with("CREATE FUNCTION ")
             || sql_upper.starts_with("CREATE OR REPLACE FUNCTION ")
@@ -2074,6 +2088,206 @@ impl Executor {
         let table_name_upper = table_name.to_uppercase();
         let data = vec![vec![Some(format!(
             "Statement executed successfully on dynamic table {table_name_upper}."
+        ))]];
+
+        Ok(StatementResponse::success(data, columns, statement_handle))
+    }
+
+    /// Handle CREATE ICEBERG TABLE statement
+    ///
+    /// Syntax:
+    /// - CREATE ICEBERG TABLE table_name ... AS SELECT ...
+    /// - CREATE OR REPLACE ICEBERG TABLE table_name ... AS SELECT ...
+    ///
+    /// The emulator stores data as a regular in-memory table (no Iceberg format).
+    /// Iceberg-specific clauses (EXTERNAL_VOLUME, CATALOG, BASE_LOCATION) are parsed and ignored.
+    async fn handle_create_iceberg_table(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        // Match table name and AS SELECT, ignoring Iceberg-specific clauses in between
+        let pattern = regex::Regex::new(
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?ICEBERG\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s+.*?\bAS\s+(.+)",
+        )
+        .unwrap();
+
+        // Also support CREATE ICEBERG TABLE with column definitions (no AS SELECT)
+        let col_pattern = regex::Regex::new(
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?ICEBERG\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s*\(([^)]+)\)",
+        )
+        .unwrap();
+
+        let sql_upper = sql.trim().to_uppercase();
+        let or_replace = sql_upper.contains("OR REPLACE");
+        let if_not_exists = sql_upper.contains("IF NOT EXISTS");
+
+        if let Some(captures) = pattern.captures(sql) {
+            let table_name = captures.get(1).unwrap().as_str();
+            let select_sql = captures.get(2).unwrap().as_str().trim();
+
+            // Remove surrounding parentheses if present
+            let select_sql = if select_sql.starts_with('(') && select_sql.ends_with(')') {
+                &select_sql[1..select_sql.len() - 1]
+            } else {
+                select_sql
+            };
+
+            // Check if table already exists
+            let table_exists = self.ctx.table(table_name).await.is_ok();
+            if table_exists {
+                if if_not_exists {
+                    let columns = vec![ColumnMetaData {
+                        name: "status".to_string(),
+                        r#type: "TEXT".to_string(),
+                        nullable: false,
+                        precision: None,
+                        scale: None,
+                        length: None,
+                    }];
+                    let data = vec![vec![Some(format!(
+                        "Table {table_name} already exists, statement succeeded."
+                    ))]];
+                    return Ok(StatementResponse::success(data, columns, statement_handle));
+                }
+                if or_replace {
+                    self.ctx.deregister_table(table_name)?;
+                } else {
+                    return Err(crate::error::Error::ExecutionError(format!(
+                        "Iceberg table {table_name} already exists"
+                    )));
+                }
+            }
+
+            // Rewrite and expand views/functions in the SELECT statement
+            let rewritten_select = sql_rewriter::rewrite(select_sql);
+            let rewritten_select = self.expand_views(&rewritten_select);
+            let rewritten_select = self.expand_user_functions(&rewritten_select);
+
+            let df = self.ctx.sql(&rewritten_select).await?;
+            let batches = df.collect().await?;
+
+            let schema = if !batches.is_empty() {
+                batches[0].schema()
+            } else {
+                return Err(crate::error::Error::ExecutionError(
+                    "Iceberg table query returned no schema".to_string(),
+                ));
+            };
+
+            let mem_table = MemTable::try_new(schema, vec![batches])?;
+            self.ctx.register_table(table_name, Arc::new(mem_table))?;
+
+            let columns = vec![ColumnMetaData {
+                name: "status".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            }];
+
+            let table_name_upper = table_name.to_uppercase();
+            let data = vec![vec![Some(format!(
+                "Iceberg Table {table_name_upper} successfully created."
+            ))]];
+
+            Ok(StatementResponse::success(data, columns, statement_handle))
+        } else if let Some(captures) = col_pattern.captures(sql) {
+            // CREATE ICEBERG TABLE with column definitions -- delegate to DataFusion
+            // by stripping the ICEBERG keyword
+            let table_name = captures.get(1).unwrap().as_str();
+            let col_defs = captures.get(2).unwrap().as_str();
+
+            let table_exists = self.ctx.table(table_name).await.is_ok();
+            if table_exists {
+                if if_not_exists {
+                    let columns = vec![ColumnMetaData {
+                        name: "status".to_string(),
+                        r#type: "TEXT".to_string(),
+                        nullable: false,
+                        precision: None,
+                        scale: None,
+                        length: None,
+                    }];
+                    let data = vec![vec![Some(format!(
+                        "Table {table_name} already exists, statement succeeded."
+                    ))]];
+                    return Ok(StatementResponse::success(data, columns, statement_handle));
+                }
+                if or_replace {
+                    self.ctx.deregister_table(table_name)?;
+                }
+            }
+
+            // Create as a regular table
+            let create_sql = format!("CREATE TABLE {table_name} ({col_defs})");
+            let df = self.ctx.sql(&create_sql).await?;
+            df.collect().await?;
+
+            let columns = vec![ColumnMetaData {
+                name: "status".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            }];
+
+            let table_name_upper = table_name.to_uppercase();
+            let data = vec![vec![Some(format!(
+                "Iceberg Table {table_name_upper} successfully created."
+            ))]];
+
+            Ok(StatementResponse::success(data, columns, statement_handle))
+        } else {
+            Err(crate::error::Error::ExecutionError(
+                "Invalid CREATE ICEBERG TABLE syntax".to_string(),
+            ))
+        }
+    }
+
+    /// Handle DROP ICEBERG TABLE statement
+    fn handle_drop_iceberg_table(
+        &self,
+        sql: &str,
+        statement_handle: String,
+    ) -> Result<StatementResponse> {
+        let pattern =
+            regex::Regex::new(r"(?i)DROP\s+ICEBERG\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][\w.]*)")
+                .unwrap();
+
+        let captures = pattern.captures(sql).ok_or_else(|| {
+            crate::error::Error::ExecutionError("Invalid DROP ICEBERG TABLE syntax".to_string())
+        })?;
+
+        let table_name = captures.get(1).unwrap().as_str();
+        let if_exists = sql.to_uppercase().contains("IF EXISTS");
+
+        let result = self.ctx.deregister_table(table_name);
+        match result {
+            Ok(Some(_)) => {}
+            Ok(None) if if_exists => {}
+            Ok(None) => {
+                return Err(crate::error::Error::ExecutionError(format!(
+                    "Iceberg table {table_name} does not exist"
+                )));
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        let columns = vec![ColumnMetaData {
+            name: "status".to_string(),
+            r#type: "TEXT".to_string(),
+            nullable: false,
+            precision: None,
+            scale: None,
+            length: None,
+        }];
+
+        let table_name_upper = table_name.to_uppercase();
+        let data = vec![vec![Some(format!(
+            "Iceberg Table {table_name_upper} successfully dropped."
         ))]];
 
         Ok(StatementResponse::success(data, columns, statement_handle))
@@ -6768,5 +6982,139 @@ mod tests {
         let response = executor.execute("SELECT add_two(3)").await.unwrap();
         let data = response.data.unwrap();
         assert_eq!(data[0][0], Some("5".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_iceberg_table_as_select() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE ice_src (id INT, value INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO ice_src VALUES (1, 10), (2, 20), (3, 30)")
+            .await
+            .unwrap();
+
+        let result = executor
+            .execute(
+                "CREATE ICEBERG TABLE ice_dst EXTERNAL_VOLUME = 'my_vol' CATALOG = 'SNOWFLAKE' BASE_LOCATION = 'ice_dst/' AS SELECT * FROM ice_src WHERE value > 15",
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "CREATE ICEBERG TABLE failed: {:?}",
+            result.err()
+        );
+
+        let response = executor
+            .execute("SELECT id, value FROM ice_dst ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 2);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("2".to_string()));
+        assert_eq!(data[1][0], Some("3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_or_replace_iceberg_table() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE ice_src2 (id INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO ice_src2 VALUES (1), (2)")
+            .await
+            .unwrap();
+
+        executor
+            .execute(
+                "CREATE ICEBERG TABLE ice_repl EXTERNAL_VOLUME = 'v' CATALOG = 'SNOWFLAKE' BASE_LOCATION = 'x/' AS SELECT * FROM ice_src2",
+            )
+            .await
+            .unwrap();
+
+        executor
+            .execute("INSERT INTO ice_src2 VALUES (3)")
+            .await
+            .unwrap();
+
+        executor
+            .execute(
+                "CREATE OR REPLACE ICEBERG TABLE ice_repl EXTERNAL_VOLUME = 'v' CATALOG = 'SNOWFLAKE' BASE_LOCATION = 'x/' AS SELECT * FROM ice_src2",
+            )
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT * FROM ice_repl ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 3);
+    }
+
+    #[tokio::test]
+    async fn test_create_iceberg_table_with_columns() {
+        let executor = Executor::new();
+
+        let result = executor
+            .execute(
+                "CREATE ICEBERG TABLE ice_cols (id INT, name VARCHAR) EXTERNAL_VOLUME = 'v' CATALOG = 'SNOWFLAKE' BASE_LOCATION = 'x/'",
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "CREATE ICEBERG TABLE with columns failed: {:?}",
+            result.err()
+        );
+
+        executor
+            .execute("INSERT INTO ice_cols VALUES (1, 'Alice')")
+            .await
+            .unwrap();
+
+        let response = executor.execute("SELECT * FROM ice_cols").await.unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn test_drop_iceberg_table() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE ice_src3 (id INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO ice_src3 VALUES (1)")
+            .await
+            .unwrap();
+
+        executor
+            .execute(
+                "CREATE ICEBERG TABLE ice_drop EXTERNAL_VOLUME = 'v' CATALOG = 'SNOWFLAKE' BASE_LOCATION = 'x/' AS SELECT * FROM ice_src3",
+            )
+            .await
+            .unwrap();
+
+        let result = executor.execute("DROP ICEBERG TABLE ice_drop").await;
+        assert!(result.is_ok());
+
+        let result = executor.execute("SELECT * FROM ice_drop").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_drop_iceberg_table_if_exists() {
+        let executor = Executor::new();
+
+        let result = executor
+            .execute("DROP ICEBERG TABLE IF EXISTS nonexistent_ice")
+            .await;
+        assert!(result.is_ok());
     }
 }
