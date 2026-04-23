@@ -477,12 +477,18 @@ impl Executor {
     ) -> Result<StatementResponse> {
         let sql_upper = sql.trim().to_uppercase();
 
-        if sql_upper.starts_with("SHOW TABLES") {
+        if sql_upper.starts_with("SHOW TABLES") || sql_upper.starts_with("SHOW TERSE OBJECTS") {
             self.handle_show_tables(statement_handle).await
-        } else if sql_upper.starts_with("SHOW SCHEMAS") {
+        } else if sql_upper.starts_with("SHOW SCHEMAS")
+            || sql_upper.starts_with("SHOW TERSE SCHEMAS")
+        {
             self.handle_show_schemas(statement_handle).await
-        } else if sql_upper.starts_with("SHOW DATABASES") {
+        } else if sql_upper.starts_with("SHOW DATABASES")
+            || sql_upper.starts_with("SHOW TERSE DATABASES")
+        {
             self.handle_show_databases(statement_handle).await
+        } else if sql_upper.starts_with("SHOW VIEWS") || sql_upper.starts_with("SHOW TERSE VIEWS") {
+            self.handle_show_tables(statement_handle).await
         } else {
             Err(crate::error::Error::ExecutionError(format!(
                 "Unsupported SHOW command: {sql}"

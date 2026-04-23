@@ -311,6 +311,8 @@ pub struct V1QueryResponse {
 #[serde(rename_all = "camelCase")]
 pub struct V1QueryResponseData {
     /// Row type (column metadata)
+    /// Python connector expects "rowtype" (lowercase), not "rowType" (camelCase)
+    #[serde(rename = "rowtype")]
     pub row_type: Vec<V1RowType>,
 
     /// Result rows (each row is array of strings)
