@@ -45,6 +45,7 @@ pub fn build_router() -> Router {
         .route("/session", axum::routing::delete(handlers::session_delete))
         .route("/telemetry/send", post(handlers::telemetry_noop))
         .route("/session/heartbeat", post(handlers::session_heartbeat))
+        .layer(tower_http::decompression::RequestDecompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state)
