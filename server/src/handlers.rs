@@ -17,6 +17,21 @@ use engine::protocol::{
 
 use crate::state::{AppState, AsyncQueryState};
 
+/// Try to decompress gzip data, falling back to raw bytes if not gzip
+fn try_decompress(data: &[u8]) -> Vec<u8> {
+    // Check gzip magic bytes: 0x1f 0x8b
+    if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+        let mut decoder = GzDecoder::new(data);
+        let mut decompressed = Vec::new();
+        if decoder.read_to_end(&mut decompressed).is_ok() {
+            return decompressed;
+        }
+    }
+    data.to_vec()
+}
+
 /// Query parameters for statement execution
 #[derive(Debug, Deserialize, Default)]
 pub struct ExecuteStatementParams {
@@ -231,8 +246,9 @@ pub async fn health_check() -> impl IntoResponse {
 /// Accepts raw body to handle both JSON and other content types from
 /// different Snowflake connector implementations (Go, Python, etc.).
 pub async fn login_request(body: axum::body::Bytes) -> impl IntoResponse {
-    // Try to parse as JSON; if it fails, use defaults
-    let request: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    // Decompress gzip if needed, then parse as JSON
+    let decompressed = try_decompress(&body);
+    let request: serde_json::Value = serde_json::from_slice(&decompressed).unwrap_or_default();
 
     let login_name = request
         .pointer("/data/LOGIN_NAME")
@@ -358,11 +374,12 @@ pub async fn v1_query_request(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    let request: V1QueryRequest = match serde_json::from_slice(&body) {
+    let decompressed = try_decompress(&body);
+    let request: V1QueryRequest = match serde_json::from_slice(&decompressed) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to parse v1 query request: {}", e);
-            tracing::debug!("Request body: {}", String::from_utf8_lossy(&body));
+            tracing::debug!("Request body: {}", String::from_utf8_lossy(&decompressed));
             let error_response =
                 V1QueryResponse::error("000900", &format!("Invalid request: {e}"), "42000");
             return (StatusCode::OK, Json(error_response)).into_response();
