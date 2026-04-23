@@ -12,3 +12,9 @@ snowflake_emulator:
       host: localhost
       port: 8080
       protocol: http
+      insecure_mode: true
+      client_session_keep_alive: false
+      connect_retries: 0
+      connect_timeout: 10
+      retry_on_database_errors: false
+      retry_all: false

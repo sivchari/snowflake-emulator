@@ -6,6 +6,13 @@ cd "$SCRIPT_DIR"
 
 echo "=== dbt Integration Test ==="
 
+# Disable OCSP checks and telemetry for emulator
+export SNOWFLAKE_OCSP_RESPONSE_CACHE_SERVER_ENABLED=false
+export SF_OCSP_RESPONSE_CACHE_SERVER_ENABLED=false
+export SNOWFLAKE_INSECURE_MODE=true
+export SF_OCSP_DO_RETRY=false
+export CLIENT_SESSION_KEEP_ALIVE=false
+
 # Check dbt is installed
 if ! command -v dbt &> /dev/null; then
     echo "ERROR: dbt is not installed"
