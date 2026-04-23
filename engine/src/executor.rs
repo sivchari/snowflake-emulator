@@ -88,7 +88,15 @@ pub struct Executor {
     user_functions: Arc<RwLock<HashMap<String, UserFunction>>>,
 }
 
-/// User-defined SQL function definition
+/// Language for user-defined functions
+#[derive(Debug, Clone, PartialEq)]
+enum UdfLanguage {
+    Sql,
+    #[cfg(feature = "js-udf")]
+    JavaScript,
+}
+
+/// User-defined function definition
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct UserFunction {
@@ -96,6 +104,7 @@ struct UserFunction {
     param_types: Vec<DataType>,
     return_type: DataType,
     body_sql: String,
+    language: UdfLanguage,
 }
 
 impl Executor {
@@ -2304,7 +2313,7 @@ impl Executor {
         statement_handle: String,
     ) -> Result<StatementResponse> {
         let pattern = regex::Regex::new(
-            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+([A-Za-z_][\w.]*)\s*\(([^)]*)\)\s+RETURNS\s+(\w+)\s+(?:LANGUAGE\s+SQL\s+)?AS\s+\$\$(.*?)\$\$",
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+([A-Za-z_][\w.]*)\s*\(([^)]*)\)\s+RETURNS\s+(\w+)\s+(?:LANGUAGE\s+(\w+)\s+)?AS\s+\$\$(.*?)\$\$",
         )
         .unwrap();
 
@@ -2315,7 +2324,28 @@ impl Executor {
         let func_name = captures.get(1).unwrap().as_str().to_uppercase();
         let params_str = captures.get(2).unwrap().as_str().trim();
         let return_type_str = captures.get(3).unwrap().as_str().trim();
-        let body_sql = captures.get(4).unwrap().as_str().trim().to_string();
+        let language_str = captures
+            .get(4)
+            .map(|m| m.as_str().to_uppercase())
+            .unwrap_or_else(|| "SQL".to_string());
+        let body = captures.get(5).unwrap().as_str().trim().to_string();
+
+        let language = match language_str.as_str() {
+            "SQL" => UdfLanguage::Sql,
+            #[cfg(feature = "js-udf")]
+            "JAVASCRIPT" | "JS" => UdfLanguage::JavaScript,
+            #[cfg(not(feature = "js-udf"))]
+            "JAVASCRIPT" | "JS" => {
+                return Err(crate::error::Error::ExecutionError(
+                    "JavaScript UDFs require the 'js-udf' feature flag".to_string(),
+                ));
+            }
+            other => {
+                return Err(crate::error::Error::ExecutionError(format!(
+                    "Unsupported language: {other}. Supported: SQL, JAVASCRIPT"
+                )));
+            }
+        };
 
         // Parse parameters
         let mut param_names = Vec::new();
@@ -2329,13 +2359,13 @@ impl Executor {
                         "Invalid parameter declaration: {param}"
                     )));
                 }
+                // Snowflake uppercases argument names in JS scope
                 param_names.push(parts[0].to_uppercase());
                 param_types.push(self.parse_sql_type(parts[1])?);
             }
         }
 
         let return_type = self.parse_sql_type(return_type_str)?;
-
         let or_replace = sql.trim().to_uppercase().contains("OR REPLACE");
 
         // Check if function already exists
@@ -2348,6 +2378,12 @@ impl Executor {
             }
         }
 
+        // For JS UDFs, register as a DataFusion ScalarUDF
+        #[cfg(feature = "js-udf")]
+        if language == UdfLanguage::JavaScript {
+            self.register_js_udf(&func_name, &param_names, &param_types, &return_type, &body)?;
+        }
+
         // Store function definition
         {
             let mut funcs = self.user_functions.write().unwrap();
@@ -2357,7 +2393,8 @@ impl Executor {
                     param_names,
                     param_types,
                     return_type,
-                    body_sql,
+                    body_sql: body,
+                    language,
                 },
             );
         }
@@ -2458,6 +2495,10 @@ impl Executor {
         let mut result = sql.to_string();
 
         for (func_name, func_def) in funcs.iter() {
+            // Skip JS UDFs - they are registered as DataFusion ScalarUDFs
+            if func_def.language != UdfLanguage::Sql {
+                continue;
+            }
             // Build regex to match function call: func_name(args...)
             // Case-insensitive match
             let call_pattern = regex::Regex::new(&format!(
@@ -2497,6 +2538,270 @@ impl Executor {
         }
 
         result
+    }
+
+    /// Register a JavaScript UDF as a DataFusion ScalarUDF using rquickjs
+    #[cfg(feature = "js-udf")]
+    fn register_js_udf(
+        &self,
+        func_name: &str,
+        param_names: &[String],
+        param_types: &[DataType],
+        return_type: &DataType,
+        body: &str,
+    ) -> Result<()> {
+        use datafusion::logical_expr::{
+            ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature,
+            Volatility,
+        };
+        use std::any::Any;
+        use std::hash::{Hash, Hasher};
+
+        #[derive(Debug)]
+        struct JsUdf {
+            name: String,
+            param_names: Vec<String>,
+            signature: Signature,
+            return_type: DataType,
+            body: String,
+        }
+
+        impl PartialEq for JsUdf {
+            fn eq(&self, other: &Self) -> bool {
+                self.name == other.name
+            }
+        }
+        impl Eq for JsUdf {}
+
+        impl Hash for JsUdf {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                self.name.hash(state);
+            }
+        }
+
+        impl ScalarUDFImpl for JsUdf {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+
+            fn name(&self) -> &str {
+                &self.name
+            }
+
+            fn signature(&self) -> &Signature {
+                &self.signature
+            }
+
+            fn return_type(&self, _arg_types: &[DataType]) -> datafusion::common::Result<DataType> {
+                Ok(self.return_type.clone())
+            }
+
+            fn invoke_with_args(
+                &self,
+                args: ScalarFunctionArgs,
+            ) -> datafusion::common::Result<ColumnarValue> {
+                use datafusion::arrow::array::{
+                    BooleanArray, Float64Array, Int64Array, StringArray,
+                };
+
+                let args = &args.args;
+
+                // Determine batch size
+                let num_rows = args
+                    .iter()
+                    .find_map(|a| {
+                        if let ColumnarValue::Array(arr) = a {
+                            Some(arr.len())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(1);
+
+                let rt = rquickjs::Runtime::new().map_err(|e| {
+                    datafusion::common::DataFusionError::Execution(format!(
+                        "Failed to create JS runtime: {e}"
+                    ))
+                })?;
+                let ctx = rquickjs::Context::full(&rt).map_err(|e| {
+                    datafusion::common::DataFusionError::Execution(format!(
+                        "Failed to create JS context: {e}"
+                    ))
+                })?;
+
+                let param_names = self.param_names.clone();
+                let body = self.body.clone();
+                let return_type = self.return_type.clone();
+
+                let results: Vec<Option<String>> = ctx.with(|ctx| {
+                    let mut results = Vec::with_capacity(num_rows);
+
+                    for row_idx in 0..num_rows {
+                        // Build JS code: assign parameters as variables, then evaluate body
+                        let mut js_code = String::new();
+
+                        for (i, param_name) in param_names.iter().enumerate() {
+                            if let Some(arg) = args.get(i) {
+                                let val_str = match arg {
+                                    ColumnarValue::Scalar(sv) => scalar_to_js_literal(sv),
+                                    ColumnarValue::Array(arr) => {
+                                        array_value_to_js_literal(arr, row_idx)
+                                    }
+                                };
+                                js_code.push_str(&format!("var {param_name} = {val_str};\n"));
+                            }
+                        }
+
+                        // Wrap body in a function if it uses return, otherwise evaluate as expression
+                        let eval_code = if body.contains("return ") {
+                            format!("{js_code}(function() {{ {body} }})()")
+                        } else {
+                            format!("{js_code}({body})")
+                        };
+
+                        let result: std::result::Result<rquickjs::Value, _> =
+                            ctx.eval(eval_code.as_bytes());
+                        match result {
+                            Ok(val) => {
+                                if val.is_null() || val.is_undefined() {
+                                    results.push(None);
+                                } else if let Some(s) = val.as_string() {
+                                    results.push(Some(s.to_string().unwrap_or_default()));
+                                } else if let Some(b) = val.as_bool() {
+                                    results.push(Some(b.to_string()));
+                                } else if let Some(f) = val.as_float() {
+                                    results.push(Some(format_js_number(f)));
+                                } else if let Some(i) = val.as_int() {
+                                    results.push(Some(i.to_string()));
+                                } else {
+                                    results.push(Some(
+                                        val.as_string()
+                                            .and_then(|s| s.to_string().ok())
+                                            .unwrap_or_default(),
+                                    ));
+                                }
+                            }
+                            Err(_) => results.push(None),
+                        }
+                    }
+                    results
+                });
+
+                // Convert results to appropriate Arrow array
+                match &return_type {
+                    DataType::Int64 => {
+                        let values: Vec<Option<i64>> = results
+                            .iter()
+                            .map(|r| r.as_ref().and_then(|s| s.parse().ok()))
+                            .collect();
+                        let array = Int64Array::from(values);
+                        Ok(ColumnarValue::Array(Arc::new(array)))
+                    }
+                    DataType::Float64 => {
+                        let values: Vec<Option<f64>> = results
+                            .iter()
+                            .map(|r| r.as_ref().and_then(|s| s.parse().ok()))
+                            .collect();
+                        let array = Float64Array::from(values);
+                        Ok(ColumnarValue::Array(Arc::new(array)))
+                    }
+                    DataType::Boolean => {
+                        let values: Vec<Option<bool>> = results
+                            .iter()
+                            .map(|r| {
+                                r.as_ref()
+                                    .map(|s| s == "true" || s == "1" || s.to_lowercase() == "true")
+                            })
+                            .collect();
+                        let array = BooleanArray::from(values);
+                        Ok(ColumnarValue::Array(Arc::new(array)))
+                    }
+                    _ => {
+                        // Default to string
+                        let array = StringArray::from(results);
+                        Ok(ColumnarValue::Array(Arc::new(array)))
+                    }
+                }
+            }
+        }
+
+        fn scalar_to_js_literal(sv: &datafusion::common::ScalarValue) -> String {
+            match sv {
+                datafusion::common::ScalarValue::Null => "null".to_string(),
+                datafusion::common::ScalarValue::Boolean(Some(b)) => b.to_string(),
+                datafusion::common::ScalarValue::Int8(Some(v)) => v.to_string(),
+                datafusion::common::ScalarValue::Int16(Some(v)) => v.to_string(),
+                datafusion::common::ScalarValue::Int32(Some(v)) => v.to_string(),
+                datafusion::common::ScalarValue::Int64(Some(v)) => v.to_string(),
+                datafusion::common::ScalarValue::Float32(Some(v)) => v.to_string(),
+                datafusion::common::ScalarValue::Float64(Some(v)) => v.to_string(),
+                datafusion::common::ScalarValue::Utf8(Some(s))
+                | datafusion::common::ScalarValue::Utf8View(Some(s))
+                | datafusion::common::ScalarValue::LargeUtf8(Some(s)) => {
+                    format!("'{}'", s.replace('\'', "\\'"))
+                }
+                _ => "null".to_string(),
+            }
+        }
+
+        fn array_value_to_js_literal(
+            arr: &dyn datafusion::arrow::array::Array,
+            idx: usize,
+        ) -> String {
+            use datafusion::arrow::array::{
+                BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+                Int8Array, StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+            };
+            if arr.is_null(idx) {
+                return "null".to_string();
+            }
+            if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<Int32Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<Int16Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<Int8Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<UInt64Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<UInt32Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<UInt16Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<UInt8Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<Float32Array>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
+                a.value(idx).to_string()
+            } else if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+                format!("'{}'", a.value(idx).replace('\'', "\\'"))
+            } else {
+                "null".to_string()
+            }
+        }
+
+        fn format_js_number(f: f64) -> String {
+            if f == f.floor() && f.abs() < i64::MAX as f64 {
+                format!("{}", f as i64)
+            } else {
+                f.to_string()
+            }
+        }
+
+        let udf = JsUdf {
+            name: func_name.to_lowercase(),
+            param_names: param_names.to_vec(),
+            signature: Signature::new(TypeSignature::Any(param_types.len()), Volatility::Volatile),
+            return_type: return_type.clone(),
+            body: body.to_string(),
+        };
+
+        self.ctx.register_udf(ScalarUDF::from(udf));
+        Ok(())
     }
 
     /// Expand view references in SQL by replacing view names with their definitions
@@ -7116,5 +7421,135 @@ mod tests {
             .execute("DROP ICEBERG TABLE IF EXISTS nonexistent_ice")
             .await;
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "js-udf")]
+    #[tokio::test]
+    async fn test_js_udf_basic() {
+        let executor = Executor::new();
+
+        executor
+            .execute(
+                "CREATE FUNCTION js_add(a FLOAT, b FLOAT) RETURNS FLOAT LANGUAGE JAVASCRIPT AS $$ return A + B; $$",
+            )
+            .await
+            .unwrap();
+
+        let response = executor.execute("SELECT js_add(3, 4)").await.unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 1);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("7".to_string()));
+    }
+
+    #[cfg(feature = "js-udf")]
+    #[tokio::test]
+    async fn test_js_udf_string() {
+        let executor = Executor::new();
+
+        executor
+            .execute(
+                "CREATE FUNCTION js_greet(name VARCHAR) RETURNS VARCHAR LANGUAGE JAVASCRIPT AS $$ return 'Hello, ' + NAME; $$",
+            )
+            .await
+            .unwrap();
+
+        let response = executor.execute("SELECT js_greet('World')").await.unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("Hello, World".to_string()));
+    }
+
+    #[cfg(feature = "js-udf")]
+    #[tokio::test]
+    async fn test_js_udf_with_table() {
+        let executor = Executor::new();
+
+        executor
+            .execute("CREATE TABLE js_test (id INT, value INT)")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO js_test VALUES (1, 10), (2, 20), (3, 30)")
+            .await
+            .unwrap();
+
+        executor
+            .execute(
+                "CREATE FUNCTION js_double(x FLOAT) RETURNS FLOAT LANGUAGE JAVASCRIPT AS $$ return X * 2; $$",
+            )
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT id, js_double(value) as doubled FROM js_test ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(response.result_set_meta_data.num_rows, 3);
+        let data = response.data.unwrap();
+        assert_eq!(data[0][1], Some("20".to_string()));
+        assert_eq!(data[1][1], Some("40".to_string()));
+        assert_eq!(data[2][1], Some("60".to_string()));
+    }
+
+    #[cfg(feature = "js-udf")]
+    #[tokio::test]
+    async fn test_js_udf_expression_without_return() {
+        let executor = Executor::new();
+
+        // Expression-style (no return keyword)
+        executor
+            .execute(
+                "CREATE FUNCTION js_square(x FLOAT) RETURNS FLOAT LANGUAGE JAVASCRIPT AS $$ X * X $$",
+            )
+            .await
+            .unwrap();
+
+        let response = executor.execute("SELECT js_square(5)").await.unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("25".to_string()));
+    }
+
+    #[cfg(feature = "js-udf")]
+    #[tokio::test]
+    async fn test_js_udf_boolean_return() {
+        let executor = Executor::new();
+
+        executor
+            .execute(
+                "CREATE FUNCTION js_is_positive(x FLOAT) RETURNS BOOLEAN LANGUAGE JAVASCRIPT AS $$ return X > 0; $$",
+            )
+            .await
+            .unwrap();
+
+        let response = executor
+            .execute("SELECT js_is_positive(5), js_is_positive(-3)")
+            .await
+            .unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("true".to_string()));
+        assert_eq!(data[0][1], Some("false".to_string()));
+    }
+
+    #[cfg(feature = "js-udf")]
+    #[tokio::test]
+    async fn test_js_udf_or_replace() {
+        let executor = Executor::new();
+
+        executor
+            .execute(
+                "CREATE FUNCTION js_val(x FLOAT) RETURNS FLOAT LANGUAGE JAVASCRIPT AS $$ return X + 1; $$",
+            )
+            .await
+            .unwrap();
+
+        executor
+            .execute(
+                "CREATE OR REPLACE FUNCTION js_val(x FLOAT) RETURNS FLOAT LANGUAGE JAVASCRIPT AS $$ return X + 100; $$",
+            )
+            .await
+            .unwrap();
+
+        let response = executor.execute("SELECT js_val(5)").await.unwrap();
+        let data = response.data.unwrap();
+        assert_eq!(data[0][0], Some("105".to_string()));
     }
 }
