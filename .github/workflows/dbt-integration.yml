@@ -68,8 +68,15 @@ jobs:
               cur = conn.cursor()
               cur.execute('SELECT 1')
               print('QUERY RESULT:', cur.fetchone())
+              # Debug: check SHOW OBJECTS column names
+              cur.execute('show objects in test_db.public')
+              print('SHOW OBJECTS COLUMNS:', [col[0] for col in cur.description])
+              rows = cur.fetchall()
+              print('SHOW OBJECTS ROWS:', rows)
               conn.close()
           except Exception as e:
+              import traceback
+              traceback.print_exc()
               print(f'CONNECTION FAILED: {e}')
           " || true
 

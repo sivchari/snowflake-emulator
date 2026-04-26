@@ -552,6 +552,22 @@ impl Executor {
                 scale: None,
                 length: None,
             },
+            ColumnMetaData {
+                name: "is_dynamic".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "is_iceberg".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
         ];
 
         let data: Vec<Vec<Option<String>>> = table_names
@@ -564,6 +580,8 @@ impl Executor {
                     Some(db_name.clone()),
                     Some(schema_name.clone()),
                     Some("TABLE".to_string()),
+                    Some("N".to_string()),
+                    Some("N".to_string()),
                 ]
             })
             .collect();
