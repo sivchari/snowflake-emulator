@@ -353,8 +353,11 @@ impl Executor {
         }
 
         // Handle CREATE TABLE ... AS SELECT (CTAS) statement
+        // Also handles TRANSIENT TABLE (Snowflake-specific, treated same as regular table)
         if (sql_upper.starts_with("CREATE TABLE ")
-            || sql_upper.starts_with("CREATE OR REPLACE TABLE "))
+            || sql_upper.starts_with("CREATE OR REPLACE TABLE ")
+            || sql_upper.starts_with("CREATE TRANSIENT TABLE ")
+            || sql_upper.starts_with("CREATE OR REPLACE TRANSIENT TABLE "))
             && sql_upper.contains(" AS ")
             && !sql_upper.contains(" AS SELECT 1")
         {
@@ -1933,7 +1936,7 @@ impl Executor {
     /// - CREATE TABLE IF NOT EXISTS table_name AS SELECT ...
     async fn handle_ctas(&self, sql: &str, statement_handle: String) -> Result<StatementResponse> {
         let ctas_pattern = regex::Regex::new(
-            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s+AS\s+(.+)",
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:TRANSIENT\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s+AS\s+(.+)",
         )
         .unwrap();
 
@@ -1943,7 +1946,9 @@ impl Executor {
             )
         })?;
 
-        let table_name = captures.get(1).unwrap().as_str();
+        let raw_table_name = captures.get(1).unwrap().as_str();
+        // Extract just the table name from fully-qualified names (db.schema.table)
+        let table_name = raw_table_name.rsplit('.').next().unwrap_or(raw_table_name);
         let select_sql = captures.get(2).unwrap().as_str().trim();
 
         // Remove surrounding parentheses if present
