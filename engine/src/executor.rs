@@ -477,7 +477,10 @@ impl Executor {
     ) -> Result<StatementResponse> {
         let sql_upper = sql.trim().to_uppercase();
 
-        if sql_upper.starts_with("SHOW TABLES") || sql_upper.starts_with("SHOW TERSE OBJECTS") {
+        if sql_upper.starts_with("SHOW TABLES")
+            || sql_upper.starts_with("SHOW TERSE OBJECTS")
+            || sql_upper.starts_with("SHOW OBJECTS")
+        {
             self.handle_show_tables(statement_handle).await
         } else if sql_upper.starts_with("SHOW SCHEMAS")
             || sql_upper.starts_with("SHOW TERSE SCHEMAS")
