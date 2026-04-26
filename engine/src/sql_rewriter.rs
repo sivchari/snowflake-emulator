@@ -46,7 +46,21 @@ pub fn rewrite(sql: &str) -> String {
     // Rewrite RATIO_TO_REPORT
     result = rewrite_ratio_to_report(&result);
 
+    // Strip fully-qualified table names (db.schema.table -> table)
+    result = strip_qualified_names(&result);
+
     result
+}
+
+/// Strip fully-qualified names (db.schema.table -> table)
+///
+/// DataFusion uses a flat namespace, so we need to remove
+/// database and schema prefixes from table references.
+fn strip_qualified_names(sql: &str) -> String {
+    // Match patterns like: FROM db.schema.table, JOIN db.schema.table, INTO db.schema.table
+    // Also handles: test_db.public.table_name
+    let pattern = Regex::new(r"(?i)\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b").unwrap();
+    pattern.replace_all(sql, "$3").to_string()
 }
 
 /// Rewrite Snowflake function names to DataFusion equivalents

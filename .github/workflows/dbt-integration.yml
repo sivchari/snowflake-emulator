@@ -1,0 +1,94 @@
+name: dbt Integration Tests
+
+on:
+  push:
+    paths:
+      - "server/**"
+      - "engine/**"
+      - "integration/dbt/**"
+      - ".github/workflows/dbt-integration.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "engine/**"
+      - "integration/dbt/**"
+      - ".github/workflows/dbt-integration.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: dbt Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dbt-snowflake
+        run: pip install dbt-snowflake
+
+      - name: Build server
+        run: cargo build --release --package server
+
+      - name: Start server
+        run: |
+          RUST_LOG=debug ./target/release/server > /tmp/server.log 2>&1 &
+          sleep 3
+          echo "Server started, checking health..."
+          curl -s http://localhost:8080/health || echo "Health check failed"
+
+      - name: Test connection with Python
+        timeout-minutes: 2
+        run: |
+          python3 -c "
+          import snowflake.connector
+          try:
+              conn = snowflake.connector.connect(
+                  account='localhost',
+                  user='test_user',
+                  password='test_password',
+                  database='test_db',
+                  schema='public',
+                  warehouse='test_wh',
+                  host='localhost',
+                  port=8080,
+                  protocol='http',
+                  insecure_mode=True,
+                  login_timeout=10,
+                  network_timeout=10,
+              )
+              print('CONNECTION SUCCESS')
+              cur = conn.cursor()
+              cur.execute('SELECT 1')
+              print('QUERY RESULT:', cur.fetchone())
+              # Debug: check SHOW OBJECTS column names
+              cur.execute('show objects in test_db.public')
+              print('SHOW OBJECTS COLUMNS:', [col[0] for col in cur.description])
+              rows = cur.fetchall()
+              print('SHOW OBJECTS ROWS:', rows)
+              conn.close()
+          except Exception as e:
+              import traceback
+              traceback.print_exc()
+              print(f'CONNECTION FAILED: {e}')
+          " || true
+
+      - name: Show server logs
+        if: always()
+        run: cat /tmp/server.log || true
+
+      - name: Run dbt integration tests
+        timeout-minutes: 5
+        working-directory: integration/dbt
+        run: bash run_test.sh
+
+      - name: Show server logs after dbt
+        if: always()
+        run: cat /tmp/server.log || true

@@ -353,8 +353,11 @@ impl Executor {
         }
 
         // Handle CREATE TABLE ... AS SELECT (CTAS) statement
+        // Also handles TRANSIENT TABLE (Snowflake-specific, treated same as regular table)
         if (sql_upper.starts_with("CREATE TABLE ")
-            || sql_upper.starts_with("CREATE OR REPLACE TABLE "))
+            || sql_upper.starts_with("CREATE OR REPLACE TABLE ")
+            || sql_upper.starts_with("CREATE TRANSIENT TABLE ")
+            || sql_upper.starts_with("CREATE OR REPLACE TRANSIENT TABLE "))
             && sql_upper.contains(" AS ")
             && !sql_upper.contains(" AS SELECT 1")
         {
@@ -477,12 +480,21 @@ impl Executor {
     ) -> Result<StatementResponse> {
         let sql_upper = sql.trim().to_uppercase();
 
-        if sql_upper.starts_with("SHOW TABLES") {
+        if sql_upper.starts_with("SHOW TABLES")
+            || sql_upper.starts_with("SHOW TERSE OBJECTS")
+            || sql_upper.starts_with("SHOW OBJECTS")
+        {
             self.handle_show_tables(statement_handle).await
-        } else if sql_upper.starts_with("SHOW SCHEMAS") {
+        } else if sql_upper.starts_with("SHOW SCHEMAS")
+            || sql_upper.starts_with("SHOW TERSE SCHEMAS")
+        {
             self.handle_show_schemas(statement_handle).await
-        } else if sql_upper.starts_with("SHOW DATABASES") {
+        } else if sql_upper.starts_with("SHOW DATABASES")
+            || sql_upper.starts_with("SHOW TERSE DATABASES")
+        {
             self.handle_show_databases(statement_handle).await
+        } else if sql_upper.starts_with("SHOW VIEWS") || sql_upper.starts_with("SHOW TERSE VIEWS") {
+            self.handle_show_tables(statement_handle).await
         } else {
             Err(crate::error::Error::ExecutionError(format!(
                 "Unsupported SHOW command: {sql}"
@@ -490,27 +502,91 @@ impl Executor {
         }
     }
 
-    /// Handle SHOW TABLES command
+    /// Handle SHOW TABLES / SHOW OBJECTS command
+    ///
+    /// Returns Snowflake-compatible columns that dbt expects:
+    /// created_on, name, database_name, schema_name, kind
     async fn handle_show_tables(&self, statement_handle: String) -> Result<StatementResponse> {
-        // Get all table names from DataFusion catalog
         let catalog = self.ctx.catalog("datafusion").unwrap();
         let schema = catalog.schema("public").unwrap();
         let table_names = schema.table_names();
 
-        // Build column metadata
-        let columns = vec![ColumnMetaData {
-            name: "TABLE_NAME".to_string(),
-            r#type: "TEXT".to_string(),
-            nullable: false,
-            precision: None,
-            scale: None,
-            length: None,
-        }];
+        let db_name = self.current_database.read().unwrap().clone();
+        let schema_name = self.current_schema.read().unwrap().clone();
 
-        // Build data rows
+        let columns = vec![
+            ColumnMetaData {
+                name: "created_on".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "name".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "database_name".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "schema_name".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "kind".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "is_dynamic".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "is_iceberg".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+        ];
+
         let data: Vec<Vec<Option<String>>> = table_names
             .iter()
-            .map(|name| vec![Some(name.clone())])
+            .filter(|name| !name.starts_with('_'))
+            .map(|name| {
+                vec![
+                    Some(String::new()),
+                    Some(name.to_uppercase()),
+                    Some(db_name.clone()),
+                    Some(schema_name.clone()),
+                    Some("TABLE".to_string()),
+                    Some("N".to_string()),
+                    Some("N".to_string()),
+                ]
+            })
             .collect();
 
         Ok(StatementResponse::success(data, columns, statement_handle))
@@ -518,19 +594,30 @@ impl Executor {
 
     /// Handle SHOW SCHEMAS command
     async fn handle_show_schemas(&self, statement_handle: String) -> Result<StatementResponse> {
-        // DataFusion uses a flat namespace, return "public" as default schema
-        let columns = vec![ColumnMetaData {
-            name: "SCHEMA_NAME".to_string(),
-            r#type: "TEXT".to_string(),
-            nullable: false,
-            precision: None,
-            scale: None,
-            length: None,
-        }];
+        // Snowflake SHOW SCHEMAS returns columns: created_on, name, is_default, is_current, ...
+        // dbt uses the "name" column
+        let columns = vec![
+            ColumnMetaData {
+                name: "created_on".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "name".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+        ];
 
         let data: Vec<Vec<Option<String>>> = vec![
-            vec![Some("public".to_string())],
-            vec![Some("information_schema".to_string())],
+            vec![Some(String::new()), Some("PUBLIC".to_string())],
+            vec![Some(String::new()), Some("INFORMATION_SCHEMA".to_string())],
         ];
 
         Ok(StatementResponse::success(data, columns, statement_handle))
@@ -1849,7 +1936,7 @@ impl Executor {
     /// - CREATE TABLE IF NOT EXISTS table_name AS SELECT ...
     async fn handle_ctas(&self, sql: &str, statement_handle: String) -> Result<StatementResponse> {
         let ctas_pattern = regex::Regex::new(
-            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s+AS\s+(.+)",
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:TRANSIENT\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s+AS\s+(.+)",
         )
         .unwrap();
 
@@ -1859,7 +1946,9 @@ impl Executor {
             )
         })?;
 
-        let table_name = captures.get(1).unwrap().as_str();
+        let raw_table_name = captures.get(1).unwrap().as_str();
+        // Extract just the table name from fully-qualified names (db.schema.table)
+        let table_name = raw_table_name.rsplit('.').next().unwrap_or(raw_table_name);
         let select_sql = captures.get(2).unwrap().as_str().trim();
 
         // Remove surrounding parentheses if present
@@ -5057,9 +5146,10 @@ mod tests {
 
         // Should include our tables
         let data = response.data.unwrap();
-        let table_names: Vec<String> = data.iter().map(|row| row[0].clone().unwrap()).collect();
-        assert!(table_names.contains(&"show_test1".to_string()));
-        assert!(table_names.contains(&"show_test2".to_string()));
+        // name is in column index 1 (after created_on)
+        let table_names: Vec<String> = data.iter().map(|row| row[1].clone().unwrap()).collect();
+        assert!(table_names.contains(&"SHOW_TEST1".to_string()));
+        assert!(table_names.contains(&"SHOW_TEST2".to_string()));
     }
 
     #[tokio::test]
@@ -5070,8 +5160,9 @@ mod tests {
 
         assert!(response.result_set_meta_data.num_rows >= 1);
         let data = response.data.unwrap();
-        let schema_names: Vec<String> = data.iter().map(|row| row[0].clone().unwrap()).collect();
-        assert!(schema_names.contains(&"public".to_string()));
+        // name is in column index 1 (after created_on)
+        let schema_names: Vec<String> = data.iter().map(|row| row[1].clone().unwrap()).collect();
+        assert!(schema_names.contains(&"PUBLIC".to_string()));
     }
 
     #[tokio::test]

@@ -311,6 +311,8 @@ pub struct V1QueryResponse {
 #[serde(rename_all = "camelCase")]
 pub struct V1QueryResponseData {
     /// Row type (column metadata)
+    /// Python connector expects "rowtype" (lowercase), not "rowType" (camelCase)
+    #[serde(rename = "rowtype")]
     pub row_type: Vec<V1RowType>,
 
     /// Result rows (each row is array of strings)
@@ -355,6 +357,8 @@ pub struct V1QueryResponseData {
 }
 
 /// v1 Row Type (column metadata)
+///
+/// All fields are always serialized (Python connector requires them).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct V1RowType {
@@ -368,19 +372,15 @@ pub struct V1RowType {
     pub nullable: bool,
 
     /// Precision (for numeric types)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub precision: Option<i32>,
 
     /// Scale (for numeric types)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub scale: Option<i32>,
 
     /// Length (for string types)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub length: Option<i32>,
 
     /// Byte length
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub byte_length: Option<i32>,
 }
 
