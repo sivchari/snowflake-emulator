@@ -499,27 +499,73 @@ impl Executor {
         }
     }
 
-    /// Handle SHOW TABLES command
+    /// Handle SHOW TABLES / SHOW OBJECTS command
+    ///
+    /// Returns Snowflake-compatible columns that dbt expects:
+    /// created_on, name, database_name, schema_name, kind
     async fn handle_show_tables(&self, statement_handle: String) -> Result<StatementResponse> {
-        // Get all table names from DataFusion catalog
         let catalog = self.ctx.catalog("datafusion").unwrap();
         let schema = catalog.schema("public").unwrap();
         let table_names = schema.table_names();
 
-        // Build column metadata
-        let columns = vec![ColumnMetaData {
-            name: "TABLE_NAME".to_string(),
-            r#type: "TEXT".to_string(),
-            nullable: false,
-            precision: None,
-            scale: None,
-            length: None,
-        }];
+        let db_name = self.current_database.read().unwrap().clone();
+        let schema_name = self.current_schema.read().unwrap().clone();
 
-        // Build data rows
+        let columns = vec![
+            ColumnMetaData {
+                name: "created_on".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "name".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "database_name".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "schema_name".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+            ColumnMetaData {
+                name: "kind".to_string(),
+                r#type: "TEXT".to_string(),
+                nullable: false,
+                precision: None,
+                scale: None,
+                length: None,
+            },
+        ];
+
         let data: Vec<Vec<Option<String>>> = table_names
             .iter()
-            .map(|name| vec![Some(name.clone())])
+            .filter(|name| !name.starts_with('_'))
+            .map(|name| {
+                vec![
+                    Some(String::new()),
+                    Some(name.to_uppercase()),
+                    Some(db_name.clone()),
+                    Some(schema_name.clone()),
+                    Some("TABLE".to_string()),
+                ]
+            })
             .collect();
 
         Ok(StatementResponse::success(data, columns, statement_handle))
@@ -5077,9 +5123,10 @@ mod tests {
 
         // Should include our tables
         let data = response.data.unwrap();
-        let table_names: Vec<String> = data.iter().map(|row| row[0].clone().unwrap()).collect();
-        assert!(table_names.contains(&"show_test1".to_string()));
-        assert!(table_names.contains(&"show_test2".to_string()));
+        // name is in column index 1 (after created_on)
+        let table_names: Vec<String> = data.iter().map(|row| row[1].clone().unwrap()).collect();
+        assert!(table_names.contains(&"SHOW_TEST1".to_string()));
+        assert!(table_names.contains(&"SHOW_TEST2".to_string()));
     }
 
     #[tokio::test]
