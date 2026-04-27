@@ -3,9 +3,10 @@ FROM rust:1.93-slim AS builder
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies (libclang-dev required by rquickjs bindgen)
 RUN apt-get update && apt-get install -y \
     pkg-config \
+    libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy source code
