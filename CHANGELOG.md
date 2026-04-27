@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.2.0](https://github.com/sivchari/snowflake-emulator/compare/v0.1.1...v0.2.0) - 2026-04-27
+- fix: handle Utf8View type in arrow_type_to_snowflake mapping by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/67
+- feat: support CREATE TABLE AS SELECT (CTAS) by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/74
+- feat: support Dynamic Table for dbt materialization by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/75
+- feat: support CREATE FUNCTION for SQL UDFs by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/76
+- feat: support Iceberg Table syntax for dbt compatibility by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/77
+- feat: support JavaScript UDFs using rquickjs by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/78
+- feat: add dbt integration test infrastructure by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/80
+- fix: add libclang-dev to Dockerfile for rquickjs bindgen by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/83
+- chore(deps): bump actions/upload-artifact from 6 to 7 by @dependabot[bot] in https://github.com/sivchari/snowflake-emulator/pull/54
+- chore(deps): bump actions/download-artifact from 7 to 8 by @dependabot[bot] in https://github.com/sivchari/snowflake-emulator/pull/55
+- chore(deps): bump docker/metadata-action from 5 to 6 by @dependabot[bot] in https://github.com/sivchari/snowflake-emulator/pull/58
+- chore(deps): bump docker/login-action from 3 to 4 by @dependabot[bot] in https://github.com/sivchari/snowflake-emulator/pull/59
+- chore(deps): bump docker/build-push-action from 6 to 7 by @dependabot[bot] in https://github.com/sivchari/snowflake-emulator/pull/60
+- chore(deps): bump rust from 1.93-slim to 1.95-slim by @dependabot[bot] in https://github.com/sivchari/snowflake-emulator/pull/65
+- release v0.2.0 by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/84
+
 ## [v0.1.1](https://github.com/sivchari/snowflake-emulator/compare/v0.1.0...v0.1.1) - 2026-02-27
 - docs: improve README with quick start, supported SQL, and CI usage by @sivchari in https://github.com/sivchari/snowflake-emulator/pull/51
 - chore(deps): bump the rust-dependencies group with 3 updates by @dependabot[bot] in https://github.com/sivchari/snowflake-emulator/pull/50
